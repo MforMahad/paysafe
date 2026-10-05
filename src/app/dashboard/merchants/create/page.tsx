@@ -1,9 +1,9 @@
-// app/dashboard/merchants/create/page.tsx
-'use client';
+"use client";
 
-import React, { useState } from 'react';
-import Link from 'next/link';
-import { motion, Variants } from 'framer-motion';
+import React, { useState } from "react";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { motion, Variants } from "framer-motion";
 import {
   ArrowLeft,
   Building2,
@@ -15,59 +15,123 @@ import {
   CheckCircle2,
   AlertCircle,
   Lock,
-} from 'lucide-react';
+  Loader2,
+} from "lucide-react";
+import { createClient } from "@/lib/supabase/client";
 
 const containerVariants: Variants = {
   hidden: { opacity: 0, y: 8 },
   visible: {
     opacity: 1,
     y: 0,
-    transition: { duration: 0.35, ease: 'easeOut' },
+    transition: { duration: 0.35, ease: "easeOut" },
   },
 };
 
+type IntegrationType = "Hosted Payment Page" | "Payment API";
+
 export default function CreateMerchantPage() {
-  const [merchantName, setMerchantName] = useState('');
-  const [statementDescriptor, setStatementDescriptor] = useState('');
-  const [integrationType, setIntegrationType] = useState('Hosted Payment Page');
-  const [hostedPaymentUrl, setHostedPaymentUrl] = useState('');
-  const [apiKey, setApiKey] = useState('');
-  const [apiSecret, setApiSecret] = useState('');
+  const router = useRouter();
+
+  const [merchantName, setMerchantName] = useState("");
+  const [statementDescriptor, setStatementDescriptor] = useState("");
+  const [integrationType, setIntegrationType] =
+    useState<IntegrationType>("Hosted Payment Page");
+
+  const [hostedPaymentUrl, setHostedPaymentUrl] = useState("");
+
+  const [apiKey, setApiKey] = useState("");
+  const [apiSecret, setApiSecret] = useState("");
   const [showApiSecret, setShowApiSecret] = useState(false);
 
-  // URL Parameter mappings
-  const [paramAmount, setParamAmount] = useState('amount');
-  const [paramCurrency, setParamCurrency] = useState('currency');
-  const [paramReference, setParamReference] = useState('reference');
-  const [paramCallbackUrl, setParamCallbackUrl] = useState('callback_url');
+  const [paramAmount, setParamAmount] = useState("amount");
+  const [paramCurrency, setParamCurrency] = useState("currency");
+  const [paramReference, setParamReference] = useState("reference");
+  const [paramCallbackUrl, setParamCallbackUrl] = useState("callback_url");
+
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState("");
+
+  const isHostedPage = integrationType === "Hosted Payment Page";
+
+  const hasRequiredBaseFields =
+    merchantName.trim() !== "" &&
+    statementDescriptor.trim() !== "" &&
+    integrationType.trim() !== "" &&
+    paramAmount.trim() !== "" &&
+    paramCurrency.trim() !== "" &&
+    paramReference.trim() !== "" &&
+    paramCallbackUrl.trim() !== "";
 
   const isValid =
-    merchantName.trim() !== '' &&
-    statementDescriptor.trim() !== '' &&
-    integrationType.trim() !== '' &&
-    hostedPaymentUrl.trim() !== '' &&
-    apiKey.trim() !== '' &&
-    apiSecret.trim() !== '' &&
-    paramAmount.trim() !== '' &&
-    paramCurrency.trim() !== '' &&
-    paramReference.trim() !== '' &&
-    paramCallbackUrl.trim() !== '';
+    hasRequiredBaseFields &&
+    (isHostedPage
+      ? hostedPaymentUrl.trim() !== ""
+      : true);
 
   const getCredentialsStatusText = () => {
-    const hasKey = apiKey.trim() !== '';
-    const hasSecret = apiSecret.trim() !== '';
+    const hasKey = apiKey.trim() !== "";
+    const hasSecret = apiSecret.trim() !== "";
 
     if (hasKey && hasSecret) {
-      return 'API key & secret provided';
+      return "API key & secret provided";
     }
+
     if (hasKey) {
-      return 'API key provided';
+      return "API key provided";
     }
+
     if (hasSecret) {
-      return 'API secret provided';
+      return "API secret provided";
     }
-    return 'Not configured';
+
+    return "Not configured";
   };
+
+  async function handleSaveMerchant() {
+    if (!isValid || saving) return;
+
+    setSaving(true);
+    setSaveError("");
+
+    const supabase = createClient();
+
+    const databaseIntegrationType =
+  integrationType === "Hosted Payment Page"
+    ? "hosted_page"
+    : "payment_api";
+
+        const { error } = await supabase.rpc("create_merchant", {
+          p_name: merchantName.trim(),
+          p_statement_descriptor: statementDescriptor.trim(),
+          p_integration_type: databaseIntegrationType,
+          p_hosted_payment_url: hostedPaymentUrl.trim() || null,
+          p_amount_parameter: paramAmount.trim() || null,
+          p_currency_parameter: paramCurrency.trim() || null,
+          p_reference_parameter: paramReference.trim() || null,
+          p_callback_url_parameter: paramCallbackUrl.trim() || null,
+        });
+
+    if (error) {
+      console.error("Failed to create merchant:", error);
+      setSaveError(
+        error.message || "Unable to create merchant. Please try again."
+      );
+      setSaving(false);
+      return;
+    }
+
+    /*
+     * API credentials are intentionally not persisted here yet.
+     *
+     * The secure credential-storage flow will be implemented separately.
+     * We do not send apiKey/apiSecret to the browser-accessible database
+     * table as plaintext.
+     */
+
+    router.push("/dashboard/merchants");
+    router.refresh();
+  }
 
   return (
     <motion.div
@@ -85,19 +149,22 @@ export default function CreateMerchantPage() {
           <ArrowLeft className="w-3.5 h-3.5" />
           <span>Merchants</span>
         </Link>
+
         <div>
           <h1 className="text-2xl font-bold text-[#0F172A] tracking-tight">
             Add Merchant
           </h1>
+
           <p className="text-sm text-[#64748B] mt-1 font-normal">
-            Configure a payment destination for use with your PaySafe payment links.
+            Configure a payment destination for use with your PaySafe payment
+            links.
           </p>
         </div>
       </div>
 
       {/* TWO-COLUMN CONFIGURATION WORKSPACE */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
-        {/* LEFT FORM COLUMN (7 cols) */}
+        {/* LEFT FORM COLUMN */}
         <div className="lg:col-span-7 space-y-8 bg-white border border-[#E2E8F0] p-6 sm:p-8 rounded-lg">
           {/* SECTION 1 — MERCHANT DETAILS */}
           <div className="space-y-4">
@@ -112,6 +179,7 @@ export default function CreateMerchantPage() {
               <label className="block text-xs font-mono font-medium text-[#0F172A]">
                 Merchant Name <span className="text-red-500">*</span>
               </label>
+
               <input
                 type="text"
                 value={merchantName}
@@ -125,6 +193,7 @@ export default function CreateMerchantPage() {
               <label className="block text-xs font-mono font-medium text-[#0F172A]">
                 Statement Descriptor <span className="text-red-500">*</span>
               </label>
+
               <input
                 type="text"
                 value={statementDescriptor}
@@ -132,8 +201,10 @@ export default function CreateMerchantPage() {
                 placeholder="Statement shown to customers"
                 className="w-full bg-white border border-[#E2E8F0] rounded-md px-3 py-2 text-xs font-mono text-[#0F172A] placeholder:text-slate-400 focus:outline-none focus:border-[#2563EB] focus:ring-1 focus:ring-[#2563EB] transition-all"
               />
+
               <p className="text-[11px] text-[#64748B] font-normal leading-relaxed pt-0.5">
-                Use the descriptor customers should recognize when reviewing a payment.
+                Use the descriptor customers should recognize when reviewing a
+                payment.
               </p>
             </div>
           </div>
@@ -151,14 +222,20 @@ export default function CreateMerchantPage() {
               <label className="block text-xs font-mono font-medium text-[#0F172A]">
                 Integration Type <span className="text-red-500">*</span>
               </label>
+
               <select
                 value={integrationType}
-                onChange={(e) => setIntegrationType(e.target.value)}
+                onChange={(e) =>
+                  setIntegrationType(e.target.value as IntegrationType)
+                }
                 className="w-full bg-white border border-[#E2E8F0] rounded-md px-3 py-2 text-xs font-mono text-[#0F172A] focus:outline-none focus:border-[#2563EB] focus:ring-1 focus:ring-[#2563EB] transition-all"
               >
-                <option value="Hosted Payment Page">Hosted Payment Page</option>
+                <option value="Hosted Payment Page">
+                  Hosted Payment Page
+                </option>
                 <option value="Payment API">Payment API</option>
               </select>
+
               <p className="text-[11px] text-[#64748B] font-normal leading-relaxed pt-0.5">
                 Choose how PaySafe will hand off or submit payment requests.
               </p>
@@ -166,15 +243,18 @@ export default function CreateMerchantPage() {
 
             <div className="space-y-1.5">
               <label className="block text-xs font-mono font-medium text-[#0F172A]">
-                Hosted Payment URL <span className="text-red-500">*</span>
+                Hosted Payment URL{" "}
+                {isHostedPage && <span className="text-red-500">*</span>}
               </label>
+
               <input
-                type="text"
+                type="url"
                 value={hostedPaymentUrl}
                 onChange={(e) => setHostedPaymentUrl(e.target.value)}
                 placeholder="https://example.com/pay"
                 className="w-full bg-white border border-[#E2E8F0] rounded-md px-3 py-2 text-xs font-mono text-[#0F172A] placeholder:text-slate-400 focus:outline-none focus:border-[#2563EB] focus:ring-1 focus:ring-[#2563EB] transition-all"
               />
+
               <p className="text-[11px] text-[#64748B] font-normal leading-relaxed pt-0.5">
                 The URL PaySafe will use when routing a payment request.
               </p>
@@ -193,8 +273,9 @@ export default function CreateMerchantPage() {
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div className="space-y-1.5">
                 <label className="block text-xs font-mono font-medium text-[#0F172A]">
-                  API Key <span className="text-red-500">*</span>
+                  API Key
                 </label>
+
                 <input
                   type="password"
                   value={apiKey}
@@ -206,20 +287,25 @@ export default function CreateMerchantPage() {
 
               <div className="space-y-1.5">
                 <label className="block text-xs font-mono font-medium text-[#0F172A]">
-                  API Secret <span className="text-red-500">*</span>
+                  API Secret
                 </label>
+
                 <div className="relative">
                   <input
-                    type={showApiSecret ? 'text' : 'password'}
+                    type={showApiSecret ? "text" : "password"}
                     value={apiSecret}
                     onChange={(e) => setApiSecret(e.target.value)}
                     placeholder="Enter API secret"
                     className="w-full bg-white border border-[#E2E8F0] rounded-md pl-3 pr-9 py-2 text-xs font-mono text-[#0F172A] placeholder:text-slate-400 focus:outline-none focus:border-[#2563EB] focus:ring-1 focus:ring-[#2563EB] transition-all"
                   />
+
                   <button
                     type="button"
                     onClick={() => setShowApiSecret(!showApiSecret)}
                     className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-[#0F172A] transition-colors"
+                    aria-label={
+                      showApiSecret ? "Hide API secret" : "Show API secret"
+                    }
                   >
                     {showApiSecret ? (
                       <EyeOff className="w-3.5 h-3.5" />
@@ -233,7 +319,10 @@ export default function CreateMerchantPage() {
 
             <div className="flex items-center gap-1.5 pt-1 text-[11px] text-[#64748B]">
               <Lock className="w-3 h-3 text-slate-400 shrink-0" />
-              <span>Credentials are required only when the selected integration requires them.</span>
+              <span>
+                Credentials will be securely stored when credential management
+                is enabled.
+              </span>
             </div>
           </div>
 
@@ -247,7 +336,8 @@ export default function CreateMerchantPage() {
             </div>
 
             <p className="text-[11px] text-[#64748B] font-normal leading-relaxed">
-              Map PaySafe payment fields to the parameter names expected by the configured payment destination.
+              Map PaySafe payment fields to the parameter names expected by
+              the configured payment destination.
             </p>
 
             <div className="space-y-3 pt-1">
@@ -255,6 +345,7 @@ export default function CreateMerchantPage() {
                 <span className="text-xs font-mono font-medium text-[#0F172A] sm:w-1/3">
                   Amount
                 </span>
+
                 <input
                   type="text"
                   value={paramAmount}
@@ -268,6 +359,7 @@ export default function CreateMerchantPage() {
                 <span className="text-xs font-mono font-medium text-[#0F172A] sm:w-1/3">
                   Currency
                 </span>
+
                 <input
                   type="text"
                   value={paramCurrency}
@@ -281,6 +373,7 @@ export default function CreateMerchantPage() {
                 <span className="text-xs font-mono font-medium text-[#0F172A] sm:w-1/3">
                   Reference
                 </span>
+
                 <input
                   type="text"
                   value={paramReference}
@@ -294,6 +387,7 @@ export default function CreateMerchantPage() {
                 <span className="text-xs font-mono font-medium text-[#0F172A] sm:w-1/3">
                   Callback URL
                 </span>
+
                 <input
                   type="text"
                   value={paramCallbackUrl}
@@ -305,6 +399,15 @@ export default function CreateMerchantPage() {
             </div>
           </div>
 
+          {/* ERROR */}
+          {saveError && (
+            <div className="flex items-start gap-2 p-3 rounded-md border border-red-200 bg-red-50 text-red-700">
+              <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+
+              <p className="text-xs leading-relaxed">{saveError}</p>
+            </div>
+          )}
+
           {/* ACTIONS */}
           <div className="pt-4 border-t border-[#E2E8F0] flex flex-col-reverse sm:flex-row items-center justify-end gap-3">
             <Link
@@ -313,27 +416,31 @@ export default function CreateMerchantPage() {
             >
               Cancel
             </Link>
+
             <button
               type="button"
-              disabled={!isValid}
-              className={`w-full sm:w-auto inline-flex items-center justify-center px-5 py-2.5 rounded-lg text-xs font-mono font-bold tracking-wider uppercase transition-colors ${
-                isValid
-                  ? 'bg-[#2563EB] hover:bg-[#1D4ED8] text-white cursor-pointer'
-                  : 'bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed'
+              disabled={!isValid || saving}
+              onClick={handleSaveMerchant}
+              className={`w-full sm:w-auto inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-lg text-xs font-mono font-bold tracking-wider uppercase transition-colors ${
+                isValid && !saving
+                  ? "bg-[#2563EB] hover:bg-[#1D4ED8] text-white cursor-pointer"
+                  : "bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed"
               }`}
             >
-              Save Merchant
+              {saving && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+              {saving ? "Saving..." : "Save Merchant"}
             </button>
           </div>
         </div>
 
-        {/* RIGHT SUMMARY COLUMN (5 cols) */}
+        {/* RIGHT SUMMARY COLUMN */}
         <div className="lg:col-span-5 space-y-4 sticky top-6">
           <div className="bg-white border border-[#E2E8F0] rounded-lg p-6 space-y-6">
             <div className="flex items-center justify-between pb-3 border-b border-[#E2E8F0]">
               <h3 className="text-xs font-mono font-bold uppercase tracking-wider text-[#0F172A]">
                 Merchant Configuration
               </h3>
+
               <div>
                 {isValid ? (
                   <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-mono font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
@@ -354,8 +461,9 @@ export default function CreateMerchantPage() {
                 <span className="text-[10px] font-mono font-bold uppercase text-[#64748B] tracking-wider block">
                   Merchant
                 </span>
+
                 <div className="text-lg font-bold font-mono text-[#0F172A] truncate">
-                  {merchantName || '—'}
+                  {merchantName || "—"}
                 </div>
               </div>
 
@@ -364,27 +472,31 @@ export default function CreateMerchantPage() {
               <div className="space-y-3 text-xs font-mono">
                 <div className="flex items-start justify-between gap-2">
                   <span className="text-[#64748B]">Descriptor</span>
+
                   <span className="text-[#0F172A] font-medium text-right max-w-[180px] truncate">
-                    {statementDescriptor || '—'}
+                    {statementDescriptor || "—"}
                   </span>
                 </div>
 
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-[#64748B]">Integration</span>
+
                   <span className="text-[#0F172A] font-medium text-right">
-                    {integrationType || '—'}
+                    {integrationType || "—"}
                   </span>
                 </div>
 
                 <div className="flex items-start justify-between gap-2">
                   <span className="text-[#64748B]">Hosted Payment URL</span>
+
                   <span className="text-[#0F172A] font-medium text-right max-w-[180px] truncate">
-                    {hostedPaymentUrl || '—'}
+                    {hostedPaymentUrl || "—"}
                   </span>
                 </div>
 
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-[#64748B]">Credentials</span>
+
                   <span className="text-[#0F172A] font-medium text-right">
                     {getCredentialsStatusText()}
                   </span>
@@ -392,6 +504,7 @@ export default function CreateMerchantPage() {
 
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-[#64748B]">URL Parameters</span>
+
                   <span className="text-[#0F172A] font-medium text-right">
                     4 configured
                   </span>
@@ -400,7 +513,9 @@ export default function CreateMerchantPage() {
             </div>
 
             <p className="text-[11px] text-[#64748B] font-normal leading-relaxed text-center">
-              This summary reflects local form inputs only. No backend records or credential validation endpoints are called upon saving in UI phase.
+              Merchant configuration is saved to your PaySafe workspace. API
+              credentials will be handled separately through secure credential
+              management.
             </p>
           </div>
         </div>
