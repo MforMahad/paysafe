@@ -1,5 +1,5 @@
-import { notFound } from 'next/navigation';
-import { createClient } from '@/lib/supabase/server';
+import { notFound } from "next/navigation";
+import { createClient } from "@/lib/supabase/server";
 
 type PublicPaymentLink = {
   id: string;
@@ -7,7 +7,7 @@ type PublicPaymentLink = {
   amount: number | string;
   currency: string;
   customer_name: string | null;
-  status: 'active' | 'expired' | 'cancelled';
+  status: "active" | "expired" | "cancelled";
   expires_at: string;
   brand_name: string;
   customer_facing_name: string | null;
@@ -20,31 +20,23 @@ type PaymentPageProps = {
   }>;
 };
 
-function formatAmount(
-  amount: number | string,
-  currency: string
-) {
-  const numericAmount =
-    typeof amount === 'number'
-      ? amount
-      : Number(amount);
+function formatAmount(amount: number | string, currency: string) {
+  const numericAmount = typeof amount === "number" ? amount : Number(amount);
 
   return `${currency.toUpperCase()} ${numericAmount.toFixed(2)}`;
 }
 
 function formatExpiration(value: string) {
-  return new Date(value).toLocaleString('en-US', {
-    month: 'long',
-    day: 'numeric',
-    year: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
+  return new Date(value).toLocaleString("en-US", {
+    month: "long",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
   });
 }
 
-export default async function PaymentPage({
-  params,
-}: PaymentPageProps) {
+export default async function PaymentPage({ params }: PaymentPageProps) {
   const { token } = await params;
 
   if (!token?.trim()) {
@@ -53,42 +45,30 @@ export default async function PaymentPage({
 
   const supabase = await createClient();
 
-  const { data, error } = await supabase.rpc(
-    'get_public_payment_link',
-    {
-      p_link_token: token.trim(),
-    }
-  );
+  const { data, error } = await supabase.rpc("get_public_payment_link", {
+    p_link_token: token.trim(),
+  });
 
   if (error) {
-    console.error(
-      'Failed to load public payment link:',
-      error
-    );
+    console.error("Failed to load public payment link:", error);
 
     notFound();
   }
 
-  const paymentLink =
-    (data?.[0] as PublicPaymentLink | undefined) ??
-    null;
+  const paymentLink = (data?.[0] as PublicPaymentLink | undefined) ?? null;
 
   if (!paymentLink) {
     notFound();
   }
 
-  const isExpired =
-    paymentLink.status === 'expired';
+  const isExpired = paymentLink.status === "expired";
 
-  const isCancelled =
-    paymentLink.status === 'cancelled';
+  const isCancelled = paymentLink.status === "cancelled";
 
-  const isUnavailable =
-    isExpired || isCancelled;
+  const isUnavailable = isExpired || isCancelled;
 
   const brandDisplayName =
-    paymentLink.customer_facing_name ||
-    paymentLink.brand_name;
+    paymentLink.customer_facing_name || paymentLink.brand_name;
 
   return (
     <main className="min-h-screen bg-[#F5F7FB] text-[#0F172A]">
@@ -106,9 +86,7 @@ export default async function PaymentPage({
                   />
                 ) : (
                   <div className="w-10 h-10 rounded-lg bg-[#0B132B] text-white flex items-center justify-center text-sm font-bold">
-                    {brandDisplayName
-                      .charAt(0)
-                      .toUpperCase()}
+                    {brandDisplayName.charAt(0).toUpperCase()}
                   </div>
                 )}
 
@@ -117,8 +95,7 @@ export default async function PaymentPage({
                     {brandDisplayName}
                   </p>
 
-                  {paymentLink.brand_name !==
-                    brandDisplayName && (
+                  {paymentLink.brand_name !== brandDisplayName && (
                     <p className="text-xs text-[#64748B]">
                       {paymentLink.brand_name}
                     </p>
@@ -171,8 +148,7 @@ export default async function PaymentPage({
                   </h1>
 
                   <p className="mt-2 text-sm text-[#64748B]">
-                    Payment requested by{' '}
-                    {brandDisplayName}.
+                    Payment requested by {brandDisplayName}.
                   </p>
                 </div>
 
@@ -183,10 +159,7 @@ export default async function PaymentPage({
                   </p>
 
                   <p className="mt-2 text-3xl sm:text-4xl font-bold tracking-tight text-[#0B132B]">
-                    {formatAmount(
-                      paymentLink.amount,
-                      paymentLink.currency
-                    )}
+                    {formatAmount(paymentLink.amount, paymentLink.currency)}
                   </p>
                 </div>
 
@@ -206,42 +179,28 @@ export default async function PaymentPage({
                 {/* EXPIRATION */}
                 <div className="mt-7">
                   <p className="text-[10px] font-mono font-bold uppercase tracking-widest text-[#64748B]">
-                    {isExpired
-                      ? 'Expired'
-                      : 'Payment Link Expires'}
+                    {isExpired ? "Expired" : "Payment Link Expires"}
                   </p>
 
                   <p className="mt-2 text-sm text-[#0F172A]">
-                    {formatExpiration(
-                      paymentLink.expires_at
-                    )}
+                    {formatExpiration(paymentLink.expires_at)}
                   </p>
                 </div>
 
                 {/* ACTION */}
                 <div className="mt-9">
-                  <button
-                    type="button"
-                    disabled={isUnavailable}
-                    className={`w-full rounded-lg px-5 py-3.5 text-xs font-mono font-bold uppercase tracking-wider transition-colors ${
-                      isUnavailable
-                        ? 'cursor-not-allowed bg-slate-100 text-slate-400 border border-slate-200'
-                        : 'bg-[#2563EB] text-white hover:bg-[#1D4ED8]'
-                    }`}
+                  <a
+                    href={`/api/payments/start?token=${encodeURIComponent(token)}`}
+                    className="inline-flex w-full items-center justify-center rounded-md bg-[#2563EB] px-4 py-3 text-sm font-semibold text-white transition-colors hover:bg-[#1D4ED8]"
                   >
-                    {isExpired
-                      ? 'Payment Link Expired'
-                      : isCancelled
-                        ? 'Payment Link Cancelled'
-                        : 'Continue to Payment'}
-                  </button>
+                    Continue to Payment
+                  </a>
                 </div>
 
                 {!isUnavailable && (
                   <p className="mt-4 text-center text-[11px] leading-relaxed text-[#64748B]">
-                    You will be redirected to the
-                    payment provider to complete your
-                    payment.
+                    You will be redirected to the payment provider to complete
+                    your payment.
                   </p>
                 )}
               </div>
