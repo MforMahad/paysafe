@@ -57,6 +57,7 @@ export default function SignupPage() {
           data: {
             full_name: fullName.trim(),
           },
+          emailRedirectTo: `${window.location.origin}/auth/check-email`,
         },
       });
 
