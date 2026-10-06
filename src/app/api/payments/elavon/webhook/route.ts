@@ -4,7 +4,7 @@ import { createAdminClient } from "@/lib/supabase/admin";
 type ElavonNotification = {
   eventType?: string;
   customReference?: string | null;
-  transaction?: string | null;
+  resource?: string | null;
   shopperEmailAddress?: string | null;
   payloadId?: string | null;
 };
@@ -131,19 +131,18 @@ export async function POST(request: NextRequest) {
       updated_at: new Date().toISOString(),
     };
 
-    if (notification.transaction) {
-      const transactionUrl =
-        notification.transaction.trim();
-
-      const transactionId =
-        transactionUrl.split("/").filter(Boolean).pop() ||
-        null;
-
-      if (transactionId) {
-        update.provider_transaction_id =
-          transactionId;
+    if (notification.resource) {
+        const resourceUrl =
+          notification.resource.trim();
+      
+        const resourceId =
+          resourceUrl.split("/").filter(Boolean).pop() ||
+          null;
+      
+        if (resourceId) {
+          update.provider_transaction_id = resourceId;
+        }
       }
-    }
 
     if (notification.payloadId) {
       update.provider_reference =
