@@ -1,8 +1,6 @@
 import "server-only";
 
-import {
-  decryptCredential,
-} from "@/lib/security/credentials";
+import { decryptCredential } from "@/lib/security/credentials";
 
 import type {
   PaymentProviderConfiguration,
@@ -10,9 +8,15 @@ import type {
 } from "./types";
 
 type MockGatewayResponse = {
-  payment_url?: string;
   id?: string;
   payment_id?: string;
+  next_action?: {
+    type?: string;
+    redirect_to_url?: {
+      return_url?: string;
+      url?: string;
+    };
+  };
 };
 
 export async function createMockGatewayPayment(
@@ -33,17 +37,18 @@ export async function createMockGatewayPayment(
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-        amount: Number(configuration.amount),
-        currency: configuration.currency.toUpperCase(),
-        description: `PaySafe payment ${configuration.paymentId}`,
-        customer:
-          configuration.customerName ||
-          configuration.customerEmail ||
-          configuration.paymentId,
-        metadata: [],
-        receipt_email: configuration.customerEmail || undefined,
-        return_url: configuration.returnUrl,
-      }),
+      amount: Number(configuration.amount),
+      currency: configuration.currency.toUpperCase(),
+      description: `PaySafe payment ${configuration.paymentId}`,
+      customer:
+        configuration.customerName ||
+        configuration.customerEmail ||
+        configuration.paymentId,
+      metadata: [],
+      receipt_email:
+        configuration.customerEmail || undefined,
+      return_url: configuration.returnUrl,
+    }),
     cache: "no-store",
   });
 
@@ -65,21 +70,27 @@ export async function createMockGatewayPayment(
     );
   }
 
-  if (!data.payment_url) {
-    console.error("MockGateway response shape:", {
+  const paymentUrl =
+    data.next_action?.redirect_to_url?.url;
+
+  if (!paymentUrl) {
+    console.error("MockGateway response missing redirect URL:", {
       status: response.status,
-      keys: Object.keys(data),
-      hasPaymentUrl: typeof data.payment_url === "string",
-      responseLength: responseText.length,
+      paymentId: configuration.paymentId,
+      responseKeys: Object.keys(data),
+      nextActionType: data.next_action?.type,
+      hasRedirectUrl: Boolean(
+        data.next_action?.redirect_to_url?.url
+      ),
     });
-  
+
     throw new Error(
-      "MockGateway did not return a payment URL."
+      "MockGateway did not return a payment redirect URL."
     );
   }
 
   return {
-    paymentUrl: data.payment_url,
+    paymentUrl,
     providerTransactionId:
       data.id ||
       data.payment_id ||
