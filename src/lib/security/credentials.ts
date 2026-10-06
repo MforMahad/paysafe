@@ -7,7 +7,8 @@ const IV_LENGTH = 12;
 const KEY_LENGTH = 32;
 
 function getEncryptionKey() {
-  const encodedKey = process.env.PAYSAFE_CREDENTIAL_ENCRYPTION_KEY;
+    const encodedKey =
+    process.env["PAYSAFE_CREDENTIAL_ENCRYPTION_KEY"];
 
   if (!encodedKey) {
     throw new Error(
