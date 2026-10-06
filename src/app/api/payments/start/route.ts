@@ -16,6 +16,7 @@ type ProviderConfigurationRow = {
   api_base_url: string;
   api_key_encrypted: string | null;
   api_secret_encrypted: string;
+  merchant_alias_encrypted: string | null;
 };
 
 export async function GET(request: NextRequest) {
@@ -62,15 +63,14 @@ export async function GET(request: NextRequest) {
     // 2. Determine the merchant integration type.
     // ---------------------------------------------------------
 
+    const admin = createAdminClient();
+
     const {
       data: providerConfiguration,
       error: configurationError,
-    } = await createAdminClient().rpc(
-      "get_payment_provider_configuration",
-      {
-        p_payment_id: payment.id,
-      }
-    );
+    } = await admin.rpc("get_payment_provider_configuration", {
+      p_payment_id: payment.id,
+    });
 
     // If the merchant is not Payment API, try the existing
     // Hosted Payment Page flow.
@@ -140,11 +140,11 @@ export async function GET(request: NextRequest) {
         customerEmail: configuration.customer_email,
         providerCode: configuration.provider_code,
         apiBaseUrl: configuration.api_base_url,
-        apiKeyEncrypted:
-          configuration.api_key_encrypted,
-        apiSecretEncrypted:
-          configuration.api_secret_encrypted,
-          returnUrl: `${request.nextUrl.origin}/api/payments/return?paymentId=${payment.id}`,
+        apiKeyEncrypted: configuration.api_key_encrypted,
+        apiSecretEncrypted: configuration.api_secret_encrypted,
+        merchantAliasEncrypted:
+          configuration.merchant_alias_encrypted,
+        returnUrl: `${request.nextUrl.origin}/api/payments/return?paymentId=${payment.id}`,
       });
     } catch (providerError) {
       console.error(
@@ -152,7 +152,7 @@ export async function GET(request: NextRequest) {
         providerError
       );
 
-      await createAdminClient()
+      await admin
         .from("payments")
         .update({
           status: "failed",
@@ -172,8 +172,6 @@ export async function GET(request: NextRequest) {
     // ---------------------------------------------------------
     // 5. Mark the PaySafe payment as processing.
     // ---------------------------------------------------------
-
-    const admin = createAdminClient();
 
     const { error: updateError } = await admin
       .from("payments")
@@ -206,14 +204,9 @@ export async function GET(request: NextRequest) {
     // 6. Send customer to provider checkout.
     // ---------------------------------------------------------
 
-    return NextResponse.redirect(
-      providerResult.paymentUrl
-    );
+    return NextResponse.redirect(providerResult.paymentUrl);
   } catch (error) {
-    console.error(
-      "Payment start error:",
-      error
-    );
+    console.error("Payment start error:", error);
 
     return NextResponse.json(
       {

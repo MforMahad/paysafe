@@ -5,9 +5,8 @@ import type {
   PaymentProviderResult,
 } from "./types";
 
-import {
-  createMockGatewayPayment,
-} from "./mockgateway";
+import { createMockGatewayPayment } from "./mockgateway";
+import { createElavonPayment } from "./elavon";
 
 export async function createProviderPayment(
   configuration: PaymentProviderConfiguration
@@ -17,6 +16,9 @@ export async function createProviderPayment(
   ) {
     case "mockgateway":
       return createMockGatewayPayment(configuration);
+
+    case "elavon_epg":
+      return createElavonPayment(configuration);
 
     default:
       throw new Error(
