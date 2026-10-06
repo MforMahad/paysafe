@@ -65,6 +65,13 @@ export async function createMockGatewayPayment(
   }
 
   if (!data.payment_url) {
+    console.error("MockGateway response shape:", {
+      status: response.status,
+      keys: Object.keys(data),
+      hasPaymentUrl: typeof data.payment_url === "string",
+      responseLength: responseText.length,
+    });
+  
     throw new Error(
       "MockGateway did not return a payment URL."
     );
