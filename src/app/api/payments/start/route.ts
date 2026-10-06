@@ -144,6 +144,7 @@ export async function GET(request: NextRequest) {
           configuration.api_key_encrypted,
         apiSecretEncrypted:
           configuration.api_secret_encrypted,
+          returnUrl: `${request.nextUrl.origin}/api/payments/return?paymentId=${payment.id}`,
       });
     } catch (providerError) {
       console.error(

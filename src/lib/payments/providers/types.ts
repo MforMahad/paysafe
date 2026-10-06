@@ -10,6 +10,7 @@ export type PaymentProviderConfiguration = {
     apiBaseUrl: string;
     apiKeyEncrypted: string | null;
     apiSecretEncrypted: string;
+    returnUrl: string;
   };
   
   export type PaymentProviderResult = {

@@ -33,16 +33,17 @@ export async function createMockGatewayPayment(
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      amount: Number(configuration.amount),
-      currency: configuration.currency.toUpperCase(),
-      description: `PaySafe payment ${configuration.paymentId}`,
-      customer:
-        configuration.customerName ||
-        configuration.customerEmail ||
-        configuration.paymentId,
-      metadata: [],
-      receipt_email: configuration.customerEmail || undefined,
-    }),
+        amount: Number(configuration.amount),
+        currency: configuration.currency.toUpperCase(),
+        description: `PaySafe payment ${configuration.paymentId}`,
+        customer:
+          configuration.customerName ||
+          configuration.customerEmail ||
+          configuration.paymentId,
+        metadata: [],
+        receipt_email: configuration.customerEmail || undefined,
+        return_url: configuration.returnUrl,
+      }),
     cache: "no-store",
   });
 
