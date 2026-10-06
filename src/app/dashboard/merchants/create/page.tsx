@@ -35,10 +35,13 @@ export default function CreateMerchantPage() {
 
   const [merchantName, setMerchantName] = useState("");
   const [statementDescriptor, setStatementDescriptor] = useState("");
-  const [integrationType, setIntegrationType] =
-    useState<IntegrationType>("Hosted Payment Page");
+  const [integrationType, setIntegrationType] = useState<IntegrationType>(
+    "Hosted Payment Page",
+  );
 
   const [hostedPaymentUrl, setHostedPaymentUrl] = useState("");
+  const [providerCode, setProviderCode] = useState("");
+  const [apiBaseUrl, setApiBaseUrl] = useState("");
 
   const [apiKey, setApiKey] = useState("");
   const [apiSecret, setApiSecret] = useState("");
@@ -57,17 +60,19 @@ export default function CreateMerchantPage() {
   const hasRequiredBaseFields =
     merchantName.trim() !== "" &&
     statementDescriptor.trim() !== "" &&
-    integrationType.trim() !== "" &&
-    paramAmount.trim() !== "" &&
-    paramCurrency.trim() !== "" &&
-    paramReference.trim() !== "" &&
-    paramCallbackUrl.trim() !== "";
+    integrationType.trim() !== "";
 
   const isValid =
     hasRequiredBaseFields &&
     (isHostedPage
-      ? hostedPaymentUrl.trim() !== ""
-      : true);
+      ? hostedPaymentUrl.trim() !== "" &&
+        paramAmount.trim() !== "" &&
+        paramCurrency.trim() !== "" &&
+        paramReference.trim() !== "" &&
+        paramCallbackUrl.trim() !== ""
+      : providerCode.trim() !== "" &&
+        apiBaseUrl.trim() !== "" &&
+        apiSecret.trim() !== "");
 
   const getCredentialsStatusText = () => {
     const hasKey = apiKey.trim() !== "";
@@ -94,43 +99,83 @@ export default function CreateMerchantPage() {
     setSaving(true);
     setSaveError("");
 
-    const supabase = createClient();
+    try {
+      const supabase = createClient();
 
-    const databaseIntegrationType =
-  integrationType === "Hosted Payment Page"
-    ? "hosted_page"
-    : "payment_api";
+      const databaseIntegrationType =
+        integrationType === "Hosted Payment Page"
+          ? "hosted_page"
+          : "payment_api";
 
-        const { error } = await supabase.rpc("create_merchant", {
-          p_name: merchantName.trim(),
-          p_statement_descriptor: statementDescriptor.trim(),
-          p_integration_type: databaseIntegrationType,
-          p_hosted_payment_url: hostedPaymentUrl.trim() || null,
-          p_amount_parameter: paramAmount.trim() || null,
-          p_currency_parameter: paramCurrency.trim() || null,
-          p_reference_parameter: paramReference.trim() || null,
-          p_callback_url_parameter: paramCallbackUrl.trim() || null,
-        });
+      const { data: merchant, error } = await supabase.rpc("create_merchant", {
+        p_name: merchantName.trim(),
+        p_statement_descriptor: statementDescriptor.trim(),
+        p_integration_type: databaseIntegrationType,
+        p_hosted_payment_url: hostedPaymentUrl.trim() || null,
+        p_amount_parameter: paramAmount.trim() || null,
+        p_currency_parameter: paramCurrency.trim() || null,
+        p_reference_parameter: paramReference.trim() || null,
+        p_callback_url_parameter: paramCallbackUrl.trim() || null,
+      });
 
-    if (error) {
-      console.error("Failed to create merchant:", error);
+      if (error) {
+        console.error("Failed to create merchant:", error);
+
+        setSaveError(
+          error.message || "Unable to create merchant. Please try again.",
+        );
+
+        setSaving(false);
+        return;
+      }
+
+      if (!merchant?.id) {
+        throw new Error(
+          "Merchant was created but no merchant ID was returned.",
+        );
+      }
+
+      if (databaseIntegrationType === "payment_api") {
+        const configurationResponse = await fetch(
+          "/api/dashboard/merchants/configuration",
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              merchantId: merchant.id,
+              providerCode: providerCode.trim(),
+              apiBaseUrl: apiBaseUrl.trim(),
+              apiKey: apiKey.trim() || null,
+              apiSecret: apiSecret.trim() || null,
+            }),
+          },
+        );
+
+        const configurationResult = await configurationResponse.json();
+
+        if (!configurationResponse.ok) {
+          throw new Error(
+            configurationResult.error ||
+              "Merchant was created, but API configuration could not be saved.",
+          );
+        }
+      }
+
+      router.push("/dashboard/merchants");
+      router.refresh();
+    } catch (error) {
+      console.error("Failed to save merchant:", error);
+
       setSaveError(
-        error.message || "Unable to create merchant. Please try again."
+        error instanceof Error
+          ? error.message
+          : "Unable to save merchant. Please try again.",
       );
+
       setSaving(false);
-      return;
     }
-
-    /*
-     * API credentials are intentionally not persisted here yet.
-     *
-     * The secure credential-storage flow will be implemented separately.
-     * We do not send apiKey/apiSecret to the browser-accessible database
-     * table as plaintext.
-     */
-
-    router.push("/dashboard/merchants");
-    router.refresh();
   }
 
   return (
@@ -230,9 +275,7 @@ export default function CreateMerchantPage() {
                 }
                 className="w-full bg-white border border-[#E2E8F0] rounded-md px-3 py-2 text-xs font-mono text-[#0F172A] focus:outline-none focus:border-[#2563EB] focus:ring-1 focus:ring-[#2563EB] transition-all"
               >
-                <option value="Hosted Payment Page">
-                  Hosted Payment Page
-                </option>
+                <option value="Hosted Payment Page">Hosted Payment Page</option>
                 <option value="Payment API">Payment API</option>
               </select>
 
@@ -241,24 +284,66 @@ export default function CreateMerchantPage() {
               </p>
             </div>
 
-            <div className="space-y-1.5">
-              <label className="block text-xs font-mono font-medium text-[#0F172A]">
-                Hosted Payment URL{" "}
-                {isHostedPage && <span className="text-red-500">*</span>}
-              </label>
+            {isHostedPage ? (
+              <div className="space-y-1.5">
+                <label className="block text-xs font-mono font-medium text-[#0F172A]">
+                  Hosted Payment URL <span className="text-red-500">*</span>
+                </label>
 
-              <input
-                type="url"
-                value={hostedPaymentUrl}
-                onChange={(e) => setHostedPaymentUrl(e.target.value)}
-                placeholder="https://example.com/pay"
-                className="w-full bg-white border border-[#E2E8F0] rounded-md px-3 py-2 text-xs font-mono text-[#0F172A] placeholder:text-slate-400 focus:outline-none focus:border-[#2563EB] focus:ring-1 focus:ring-[#2563EB] transition-all"
-              />
+                <input
+                  type="url"
+                  value={hostedPaymentUrl}
+                  onChange={(e) => setHostedPaymentUrl(e.target.value)}
+                  placeholder="https://example.com/pay"
+                  className="w-full bg-white border border-[#E2E8F0] rounded-md px-3 py-2 text-xs font-mono text-[#0F172A] placeholder:text-slate-400 focus:outline-none focus:border-[#2563EB] focus:ring-1 focus:ring-[#2563EB] transition-all"
+                />
 
-              <p className="text-[11px] text-[#64748B] font-normal leading-relaxed pt-0.5">
-                The URL PaySafe will use when routing a payment request.
-              </p>
-            </div>
+                <p className="text-[11px] text-[#64748B] font-normal leading-relaxed pt-0.5">
+                  The URL PaySafe will use when routing a payment request.
+                </p>
+              </div>
+            ) : (
+              <>
+                <div className="space-y-1.5">
+                  <label className="block text-xs font-mono font-medium text-[#0F172A]">
+                    Provider Code <span className="text-red-500">*</span>
+                  </label>
+
+                  <input
+                    type="text"
+                    value={providerCode}
+                    onChange={(e) => setProviderCode(e.target.value)}
+                    placeholder="mockgateway"
+                    autoComplete="off"
+                    className="w-full bg-white border border-[#E2E8F0] rounded-md px-3 py-2 text-xs font-mono text-[#0F172A] placeholder:text-slate-400 focus:outline-none focus:border-[#2563EB] focus:ring-1 focus:ring-[#2563EB] transition-all"
+                  />
+
+                  <p className="text-[11px] text-[#64748B] font-normal leading-relaxed pt-0.5">
+                    Internal provider identifier used by the PaySafe payment
+                    engine.
+                  </p>
+                </div>
+
+                <div className="space-y-1.5">
+                  <label className="block text-xs font-mono font-medium text-[#0F172A]">
+                    API Base URL <span className="text-red-500">*</span>
+                  </label>
+
+                  <input
+                    type="url"
+                    value={apiBaseUrl}
+                    onChange={(e) => setApiBaseUrl(e.target.value)}
+                    placeholder="https://provider.example.com/api"
+                    autoComplete="url"
+                    className="w-full bg-white border border-[#E2E8F0] rounded-md px-3 py-2 text-xs font-mono text-[#0F172A] placeholder:text-slate-400 focus:outline-none focus:border-[#2563EB] focus:ring-1 focus:ring-[#2563EB] transition-all"
+                  />
+
+                  <p className="text-[11px] text-[#64748B] font-normal leading-relaxed pt-0.5">
+                    HTTPS API endpoint used by PaySafe to initiate payments.
+                  </p>
+                </div>
+              </>
+            )}
           </div>
 
           {/* SECTION 3 — CREDENTIALS */}
@@ -281,13 +366,14 @@ export default function CreateMerchantPage() {
                   value={apiKey}
                   onChange={(e) => setApiKey(e.target.value)}
                   placeholder="Enter API key"
+                  autoComplete="off"
                   className="w-full bg-white border border-[#E2E8F0] rounded-md px-3 py-2 text-xs font-mono text-[#0F172A] placeholder:text-slate-400 focus:outline-none focus:border-[#2563EB] focus:ring-1 focus:ring-[#2563EB] transition-all"
                 />
               </div>
 
               <div className="space-y-1.5">
                 <label className="block text-xs font-mono font-medium text-[#0F172A]">
-                  API Secret
+                {!isHostedPage && <span className="text-red-500">*</span>}
                 </label>
 
                 <div className="relative">
@@ -296,6 +382,7 @@ export default function CreateMerchantPage() {
                     value={apiSecret}
                     onChange={(e) => setApiSecret(e.target.value)}
                     placeholder="Enter API secret"
+                    autoComplete="new-password"
                     className="w-full bg-white border border-[#E2E8F0] rounded-md pl-3 pr-9 py-2 text-xs font-mono text-[#0F172A] placeholder:text-slate-400 focus:outline-none focus:border-[#2563EB] focus:ring-1 focus:ring-[#2563EB] transition-all"
                   />
 
@@ -320,13 +407,14 @@ export default function CreateMerchantPage() {
             <div className="flex items-center gap-1.5 pt-1 text-[11px] text-[#64748B]">
               <Lock className="w-3 h-3 text-slate-400 shrink-0" />
               <span>
-                Credentials will be securely stored when credential management
-                is enabled.
+                Credentials are encrypted before being stored securely.
               </span>
             </div>
           </div>
 
           {/* SECTION 4 — PAYMENT URL PARAMETERS */}
+          {isHostedPage && (
+
           <div className="space-y-4">
             <div className="flex items-center gap-2 pb-2 border-b border-[#E2E8F0]">
               <Sliders className="w-4 h-4 text-[#2563EB]" />
@@ -336,8 +424,8 @@ export default function CreateMerchantPage() {
             </div>
 
             <p className="text-[11px] text-[#64748B] font-normal leading-relaxed">
-              Map PaySafe payment fields to the parameter names expected by
-              the configured payment destination.
+              Map PaySafe payment fields to the parameter names expected by the
+              configured payment destination.
             </p>
 
             <div className="space-y-3 pt-1">
@@ -399,11 +487,13 @@ export default function CreateMerchantPage() {
             </div>
           </div>
 
+        )}
+
+
           {/* ERROR */}
           {saveError && (
             <div className="flex items-start gap-2 p-3 rounded-md border border-red-200 bg-red-50 text-red-700">
               <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-
               <p className="text-xs leading-relaxed">{saveError}</p>
             </div>
           )}
@@ -486,13 +576,33 @@ export default function CreateMerchantPage() {
                   </span>
                 </div>
 
-                <div className="flex items-start justify-between gap-2">
-                  <span className="text-[#64748B]">Hosted Payment URL</span>
+                {isHostedPage ? (
+                  <div className="flex items-start justify-between gap-2">
+                    <span className="text-[#64748B]">Hosted Payment URL</span>
 
-                  <span className="text-[#0F172A] font-medium text-right max-w-[180px] truncate">
-                    {hostedPaymentUrl || "—"}
-                  </span>
-                </div>
+                    <span className="text-[#0F172A] font-medium text-right max-w-[180px] truncate">
+                      {hostedPaymentUrl || "—"}
+                    </span>
+                  </div>
+                ) : (
+                  <>
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[#64748B]">Provider</span>
+
+                      <span className="text-[#0F172A] font-medium text-right">
+                        {providerCode || "—"}
+                      </span>
+                    </div>
+
+                    <div className="flex items-start justify-between gap-2">
+                      <span className="text-[#64748B]">API Base URL</span>
+
+                      <span className="text-[#0F172A] font-medium text-right max-w-[180px] truncate">
+                        {apiBaseUrl || "—"}
+                      </span>
+                    </div>
+                  </>
+                )}
 
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-[#64748B]">Credentials</span>
@@ -502,20 +612,21 @@ export default function CreateMerchantPage() {
                   </span>
                 </div>
 
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-[#64748B]">URL Parameters</span>
+                {isHostedPage && (
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[#64748B]">URL Parameters</span>
 
-                  <span className="text-[#0F172A] font-medium text-right">
-                    4 configured
-                  </span>
-                </div>
+                    <span className="text-[#0F172A] font-medium text-right">
+                      4 configured
+                    </span>
+                  </div>
+                )}
               </div>
             </div>
 
             <p className="text-[11px] text-[#64748B] font-normal leading-relaxed text-center">
-              Merchant configuration is saved to your PaySafe workspace. API
-              credentials will be handled separately through secure credential
-              management.
+              Merchant configuration and API credentials are securely stored in
+              your PaySafe workspace.
             </p>
           </div>
         </div>
