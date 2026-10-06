@@ -101,17 +101,24 @@ export async function POST(request: NextRequest) {
         p_merchant_alias_encrypted: encryptedMerchantAlias,
       });
 
-    if (saveError) {
-      console.error(
-        "Failed to save merchant API configuration:",
-        saveError.message
-      );
-
-      return NextResponse.json(
-        { error: "Unable to save merchant API configuration." },
-        { status: 500 }
-      );
-    }
+      if (saveError) {
+        console.error(
+          "save_merchant_api_configuration failed:",
+          saveError
+        );
+      
+        return NextResponse.json(
+          {
+            error:
+              saveError.message ||
+              "Unable to save merchant API configuration.",
+            code: saveError.code || null,
+            details: saveError.details || null,
+            hint: saveError.hint || null,
+          },
+          { status: 500 }
+        );
+      }
 
     return NextResponse.json({
       merchantId: savedMerchantId,
