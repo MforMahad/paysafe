@@ -60,134 +60,182 @@ export async function GET(request: NextRequest) {
     }
 
     // ---------------------------------------------------------
-    // 2. Determine the merchant integration type.
+    // 2. Resolve the merchant from the trusted payment record.
     // ---------------------------------------------------------
 
     const admin = createAdminClient();
 
-const {
-  data: merchant,
-  error: merchantError,
-} = await admin
-  .from("merchants")
-  .select("id, integration_type, provider_code")
-  .eq("id", payment.merchant_id)
-  .maybeSingle();
+    const {
+      data: paymentRecord,
+      error: paymentRecordError,
+    } = await admin
+      .from("payments")
+      .select("merchant_id")
+      .eq("id", payment.id)
+      .maybeSingle();
 
-if (merchantError) {
-  console.error(
-    "Failed to load payment merchant:",
-    merchantError.message
-  );
+    if (paymentRecordError) {
+      console.error(
+        "Failed to load payment merchant:",
+        paymentRecordError.message
+      );
 
-  return NextResponse.json(
-    {
-      error: "Unable to determine the payment merchant.",
-    },
-    { status: 500 }
-  );
-}
-
-if (!merchant) {
-  return NextResponse.json(
-    {
-      error: "Payment merchant not found.",
-    },
-    { status: 404 }
-  );
-}
-
-// ---------------------------------------------------------
-// Hosted Payment Page merchant
-// ---------------------------------------------------------
-
-if (merchant.integration_type === "hosted_page") {
-  const {
-    data: redirectUrl,
-    error: redirectError,
-  } = await supabase.rpc("get_payment_redirect", {
-    p_payment_id: payment.id,
-  });
-
-  if (redirectError || !redirectUrl) {
-    console.error(
-      "Failed to resolve hosted payment redirect:",
-      redirectError?.message
-    );
-
-    return NextResponse.json(
-      {
-        error:
-          redirectError?.message ||
-          "Unable to resolve the hosted payment destination.",
-      },
-      { status: 400 }
-    );
-  }
-
-  return NextResponse.redirect(redirectUrl);
-}
-
-// ---------------------------------------------------------
-// Payment API merchant
-// ---------------------------------------------------------
-
-if (merchant.integration_type !== "payment_api") {
-  return NextResponse.json(
-    {
-      error: "Unsupported merchant integration type.",
-    },
-    { status: 400 }
-  );
-}
-
-const {
-  data: providerConfiguration,
-  error: configurationError,
-} = await admin.rpc("get_payment_provider_configuration", {
-  p_payment_id: payment.id,
-});
-
-if (configurationError) {
-  console.error(
-    "Failed to load payment provider configuration:",
-    {
-      message: configurationError.message,
-      code: configurationError.code,
-      details: configurationError.details,
-      hint: configurationError.hint,
+      return NextResponse.json(
+        {
+          error: "Unable to determine the payment merchant.",
+        },
+        { status: 500 }
+      );
     }
-  );
 
-  return NextResponse.json(
-    {
-      error:
-        "Unable to load the payment provider configuration.",
-    },
-    { status: 500 }
-  );
-}
-
-if (
-  !providerConfiguration ||
-  providerConfiguration.length === 0
-) {
-  return NextResponse.json(
-    {
-      error:
-        "Payment provider configuration is not available.",
-    },
-    { status: 500 }
-  );
-}
-
+    if (!paymentRecord?.merchant_id) {
+      return NextResponse.json(
+        {
+          error: "Payment merchant is not configured.",
+        },
+        { status: 500 }
+      );
+    }
 
     // ---------------------------------------------------------
-    // 3. Payment API merchant.
+    // 3. Load the merchant integration type.
     // ---------------------------------------------------------
+
+    const {
+      data: merchant,
+      error: merchantError,
+    } = await admin
+      .from("merchants")
+      .select("id, integration_type, provider_code")
+      .eq("id", paymentRecord.merchant_id)
+      .maybeSingle();
+
+    if (merchantError) {
+      console.error(
+        "Failed to load payment merchant:",
+        merchantError.message
+      );
+
+      return NextResponse.json(
+        {
+          error: "Unable to determine the payment merchant.",
+        },
+        { status: 500 }
+      );
+    }
+
+    if (!merchant) {
+      return NextResponse.json(
+        {
+          error: "Payment merchant not found.",
+        },
+        { status: 404 }
+      );
+    }
+
+    // ---------------------------------------------------------
+    // 4. Hosted Payment Page merchant.
+    // ---------------------------------------------------------
+
+    if (merchant.integration_type === "hosted_page") {
+      const {
+        data: redirectUrl,
+        error: redirectError,
+      } = await supabase.rpc("get_payment_redirect", {
+        p_payment_id: payment.id,
+      });
+
+      if (redirectError || !redirectUrl) {
+        console.error(
+          "Failed to resolve hosted payment redirect:",
+          redirectError?.message
+        );
+
+        return NextResponse.json(
+          {
+            error:
+              redirectError?.message ||
+              "Unable to resolve the hosted payment destination.",
+          },
+          { status: 400 }
+        );
+      }
+
+      return NextResponse.redirect(redirectUrl);
+    }
+
+    // ---------------------------------------------------------
+    // 5. Payment API merchant.
+    // ---------------------------------------------------------
+
+    if (merchant.integration_type !== "payment_api") {
+      return NextResponse.json(
+        {
+          error: "Unsupported merchant integration type.",
+        },
+        { status: 400 }
+      );
+    }
+
+    // ---------------------------------------------------------
+    // 6. Load secure provider configuration.
+    // ---------------------------------------------------------
+
+    const {
+      data: providerConfiguration,
+      error: configurationError,
+    } = await admin.rpc("get_payment_provider_configuration", {
+      p_payment_id: payment.id,
+    });
+
+    if (configurationError) {
+      console.error(
+        "Failed to load payment provider configuration:",
+        {
+          message: configurationError.message,
+          code: configurationError.code,
+          details: configurationError.details,
+          hint: configurationError.hint,
+        }
+      );
+
+      return NextResponse.json(
+        {
+          error:
+            "Unable to load the payment provider configuration.",
+        },
+        { status: 500 }
+      );
+    }
+
+    if (
+      !providerConfiguration ||
+      providerConfiguration.length === 0
+    ) {
+      console.error(
+        "Payment provider configuration was not found:",
+        {
+          paymentId: payment.id,
+          merchantId: merchant.id,
+          providerCode: merchant.provider_code,
+        }
+      );
+
+      return NextResponse.json(
+        {
+          error:
+            "Payment provider configuration is not available.",
+        },
+        { status: 500 }
+      );
+    }
 
     const configuration =
       providerConfiguration[0] as ProviderConfigurationRow;
+
+    // ---------------------------------------------------------
+    // 7. Validate provider credentials.
+    // ---------------------------------------------------------
 
     if (!configuration.api_secret_encrypted) {
       return NextResponse.json(
@@ -200,7 +248,7 @@ if (
     }
 
     // ---------------------------------------------------------
-    // 4. Create payment with provider.
+    // 8. Create payment with provider.
     // ---------------------------------------------------------
 
     let providerResult;
@@ -246,7 +294,7 @@ if (
     }
 
     // ---------------------------------------------------------
-    // 5. Mark the PaySafe payment as processing.
+    // 9. Mark PaySafe payment as processing.
     // ---------------------------------------------------------
 
     const { error: updateError } = await admin
@@ -277,7 +325,7 @@ if (
     }
 
     // ---------------------------------------------------------
-    // 6. Send customer to provider checkout.
+    // 10. Send customer to provider checkout.
     // ---------------------------------------------------------
 
     return NextResponse.redirect(providerResult.paymentUrl);
