@@ -60,7 +60,7 @@ export async function GET(request: NextRequest) {
     }
 
     // ---------------------------------------------------------
-    // 2. Determine the merchant integration type.
+    // 2. Load the payment provider configuration.
     // ---------------------------------------------------------
 
     const admin = createAdminClient();
@@ -72,13 +72,46 @@ export async function GET(request: NextRequest) {
       p_payment_id: payment.id,
     });
 
-    // If the merchant is not Payment API, use the existing
-    // Hosted Payment Page flow.
-    if (
-      configurationError ||
-      !providerConfiguration ||
-      providerConfiguration.length === 0
-    ) {
+    // Do NOT silently fall back to the hosted-payment flow when
+    // the provider configuration RPC itself fails. That would
+    // hide the real error behind "Merchant does not use a hosted
+    // payment page."
+    if (configurationError) {
+      console.error(
+        "Provider configuration RPC failed:",
+        {
+          message: configurationError.message,
+          code: configurationError.code,
+          details: configurationError.details,
+          hint: configurationError.hint,
+          paymentId: payment.id,
+        }
+      );
+
+      return NextResponse.json(
+        {
+          error: "Provider configuration RPC failed.",
+          details: configurationError.message,
+        },
+        { status: 500 }
+      );
+    }
+
+    // ---------------------------------------------------------
+    // 3. No Payment API configuration.
+    //
+    // This is the only case where we use the existing Hosted
+    // Payment Page flow.
+    // ---------------------------------------------------------
+
+    if (!providerConfiguration || providerConfiguration.length === 0) {
+      console.error(
+        "Provider configuration RPC returned no rows:",
+        {
+          paymentId: payment.id,
+        }
+      );
+
       const {
         data: redirectUrl,
         error: redirectError,
@@ -96,7 +129,6 @@ export async function GET(request: NextRequest) {
           {
             error:
               redirectError?.message ||
-              configurationError?.message ||
               "Unable to resolve the payment destination.",
           },
           { status: 400 }
@@ -107,7 +139,7 @@ export async function GET(request: NextRequest) {
     }
 
     // ---------------------------------------------------------
-    // 3. Payment API merchant.
+    // 4. Payment API merchant.
     // ---------------------------------------------------------
 
     const configuration =
@@ -124,7 +156,7 @@ export async function GET(request: NextRequest) {
     }
 
     // ---------------------------------------------------------
-    // 4. Create payment with provider.
+    // 5. Create payment with provider.
     // ---------------------------------------------------------
 
     let providerResult;
@@ -170,7 +202,7 @@ export async function GET(request: NextRequest) {
     }
 
     // ---------------------------------------------------------
-    // 5. Mark the PaySafe payment as processing.
+    // 6. Mark the PaySafe payment as processing.
     // ---------------------------------------------------------
 
     const { error: updateError } = await admin
@@ -201,7 +233,7 @@ export async function GET(request: NextRequest) {
     }
 
     // ---------------------------------------------------------
-    // 6. Send customer to provider checkout.
+    // 7. Send customer to provider checkout.
     // ---------------------------------------------------------
 
     return NextResponse.redirect(providerResult.paymentUrl);

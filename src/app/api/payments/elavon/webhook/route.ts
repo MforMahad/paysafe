@@ -142,7 +142,7 @@ export async function POST(request: NextRequest) {
         if (resourceId) {
           update.provider_transaction_id = resourceId;
         }
-      }
+      } 
 
     if (notification.payloadId) {
       update.provider_reference =
