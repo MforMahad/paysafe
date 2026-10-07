@@ -19,8 +19,11 @@ type ProviderConfigurationRow = {
   merchant_alias_encrypted: string | null;
 };
 
-export async function GET(request: NextRequest) {
+export async function POST(request: NextRequest) {
   const token = request.nextUrl.searchParams.get("token")?.trim();
+  const idempotencyKey = request.headers
+    .get("Idempotency-Key")
+    ?.trim();
 
   if (!token) {
     return NextResponse.json(
@@ -29,11 +32,25 @@ export async function GET(request: NextRequest) {
     );
   }
 
+  if (!idempotencyKey) {
+    return NextResponse.json(
+      { error: "Idempotency-Key header is required." },
+      { status: 400 }
+    );
+  }
+
+  if (idempotencyKey.length > 128) {
+    return NextResponse.json(
+      { error: "Idempotency-Key header is too long." },
+      { status: 400 }
+    );
+  }
+
   try {
     const supabase = await createClient();
 
     // ---------------------------------------------------------
-    // 1. Create the pending payment attempt.
+    // 1. Create or reuse the payment attempt.
     // ---------------------------------------------------------
 
     const {
@@ -41,6 +58,7 @@ export async function GET(request: NextRequest) {
       error: paymentError,
     } = await supabase.rpc("create_payment_attempt", {
       p_link_token: token,
+      p_idempotency_key: idempotencyKey,
     });
 
     if (paymentError || !payment) {
@@ -73,9 +91,7 @@ export async function GET(request: NextRequest) {
     });
 
     // Do NOT silently fall back to the hosted-payment flow when
-    // the provider configuration RPC itself fails. That would
-    // hide the real error behind "Merchant does not use a hosted
-    // payment page."
+    // the provider configuration RPC itself fails.
     if (configurationError) {
       console.error(
         "Provider configuration RPC failed:",
@@ -104,7 +120,10 @@ export async function GET(request: NextRequest) {
     // Payment Page flow.
     // ---------------------------------------------------------
 
-    if (!providerConfiguration || providerConfiguration.length === 0) {
+    if (
+      !providerConfiguration ||
+      providerConfiguration.length === 0
+    ) {
       console.error(
         "Provider configuration RPC returned no rows:",
         {
@@ -135,7 +154,9 @@ export async function GET(request: NextRequest) {
         );
       }
 
-      return NextResponse.redirect(redirectUrl);
+      return NextResponse.json({
+        paymentUrl: redirectUrl,
+      });
     }
 
     // ---------------------------------------------------------
@@ -173,7 +194,8 @@ export async function GET(request: NextRequest) {
         providerCode: configuration.provider_code,
         apiBaseUrl: configuration.api_base_url,
         apiKeyEncrypted: configuration.api_key_encrypted,
-        apiSecretEncrypted: configuration.api_secret_encrypted,
+        apiSecretEncrypted:
+          configuration.api_secret_encrypted,
         merchantAliasEncrypted:
           configuration.merchant_alias_encrypted,
         returnUrl: `${request.nextUrl.origin}/api/payments/return?paymentId=${payment.id}`,
@@ -236,7 +258,10 @@ export async function GET(request: NextRequest) {
     // 7. Send customer to provider checkout.
     // ---------------------------------------------------------
 
-    return NextResponse.redirect(providerResult.paymentUrl);
+    return NextResponse.json({
+      paymentUrl: providerResult.paymentUrl,
+    });
+    
   } catch (error) {
     console.error("Payment start error:", error);
 
