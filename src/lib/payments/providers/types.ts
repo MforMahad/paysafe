@@ -1,3 +1,5 @@
+import "server-only";
+
 export type PaymentProviderConfiguration = {
   paymentId: string;
   merchantId: string;
@@ -16,6 +18,7 @@ export type PaymentProviderConfiguration = {
 
 export type PaymentProviderResult = {
   paymentUrl: string;
+  providerSessionId?: string | null;
   providerTransactionId?: string | null;
   providerReference?: string | null;
 };

@@ -7,6 +7,11 @@ type PaymentButtonProps = {
   disabled?: boolean;
 };
 
+type PaymentStartResponse = {
+  paymentUrl?: string;
+  error?: string;
+};
+
 function createIdempotencyKey() {
   return crypto.randomUUID();
 }
@@ -22,61 +27,66 @@ export default function PaymentButton({
     if (isLoading || disabled) {
       return;
     }
-  
+
     setIsLoading(true);
     setError(null);
-  
-    const idempotencyKey = createIdempotencyKey();
-  
+
     try {
       const response = await fetch(
-        `/api/payments/start?token=${encodeURIComponent(token)}`,
+        `/api/payments/start?token=${encodeURIComponent(
+          token
+        )}`,
         {
           method: "POST",
           headers: {
-            "Idempotency-Key": idempotencyKey,
+            "Idempotency-Key": createIdempotencyKey(),
           },
+          cache: "no-store",
         }
       );
-  
-      let data: {
-        paymentUrl?: string;
-        error?: string;
-      } = {};
-  
+
+      let data: PaymentStartResponse = {};
+
       try {
         data = await response.json();
       } catch {
-        // Keep the default error below.
+        throw new Error(
+          "The payment server returned an invalid response."
+        );
       }
-  
+
       if (!response.ok) {
         throw new Error(
           data.error ||
             "Unable to start the payment. Please try again."
         );
       }
-  
-      if (!data.paymentUrl) {
+
+      if (
+        typeof data.paymentUrl !== "string" ||
+        !data.paymentUrl
+      ) {
         throw new Error(
-          "Payment provider did not return a checkout URL."
+          "The payment server did not return a payment page."
         );
       }
-  
+
       window.location.assign(data.paymentUrl);
     } catch (paymentError) {
-      console.error("Payment start failed:", paymentError);
-  
+      console.error(
+        "Payment start failed:",
+        paymentError
+      );
+
       setError(
         paymentError instanceof Error
           ? paymentError.message
           : "Unable to start the payment. Please try again."
       );
-  
+
       setIsLoading(false);
     }
   }
-  
 
   return (
     <div>
@@ -86,7 +96,9 @@ export default function PaymentButton({
         disabled={disabled || isLoading}
         className="inline-flex w-full items-center justify-center rounded-md bg-[#2563EB] px-4 py-3 text-sm font-semibold text-white transition-colors hover:bg-[#1D4ED8] disabled:cursor-not-allowed disabled:opacity-60"
       >
-        {isLoading ? "Preparing payment..." : "Continue to Payment"}
+        {isLoading
+          ? "Preparing payment..."
+          : "Continue to Payment"}
       </button>
 
       {error && (

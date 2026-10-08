@@ -21,6 +21,7 @@ type ProviderConfigurationRow = {
 
 export async function POST(request: NextRequest) {
   const token = request.nextUrl.searchParams.get("token")?.trim();
+
   const idempotencyKey = request.headers
     .get("Idempotency-Key")
     ?.trim();
@@ -90,8 +91,7 @@ export async function POST(request: NextRequest) {
       p_payment_id: payment.id,
     });
 
-    // Do NOT silently fall back to the hosted-payment flow when
-    // the provider configuration RPC itself fails.
+    // Do NOT silently fall back when the configuration RPC fails.
     if (configurationError) {
       console.error(
         "Provider configuration RPC failed:",
@@ -116,8 +116,7 @@ export async function POST(request: NextRequest) {
     // ---------------------------------------------------------
     // 3. No Payment API configuration.
     //
-    // This is the only case where we use the existing Hosted
-    // Payment Page flow.
+    // Preserve the existing hosted-page merchant behavior.
     // ---------------------------------------------------------
 
     if (
@@ -177,7 +176,7 @@ export async function POST(request: NextRequest) {
     }
 
     // ---------------------------------------------------------
-    // 5. Create payment with provider.
+    // 5. Create the payment with the provider.
     // ---------------------------------------------------------
 
     let providerResult;
@@ -198,7 +197,8 @@ export async function POST(request: NextRequest) {
           configuration.api_secret_encrypted,
         merchantAliasEncrypted:
           configuration.merchant_alias_encrypted,
-        returnUrl: `${request.nextUrl.origin}/api/payments/return?paymentId=${payment.id}`,
+        returnUrl:
+          `${request.nextUrl.origin}/api/payments/return?paymentId=${payment.id}`,
       });
     } catch (providerError) {
       console.error(
@@ -224,7 +224,43 @@ export async function POST(request: NextRequest) {
     }
 
     // ---------------------------------------------------------
-    // 6. Mark the PaySafe payment as processing.
+    // 6. Require a provider session for Payment API providers.
+    // ---------------------------------------------------------
+
+    if (
+      configuration.provider_code.trim().toLowerCase() ===
+        "elavon_epg" &&
+      !providerResult.providerSessionId
+    ) {
+      console.error(
+        "Elavon payment session was not returned:",
+        {
+          paymentId: payment.id,
+        }
+      );
+
+      await admin
+        .from("payments")
+        .update({
+          status: "failed",
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", payment.id);
+
+      return NextResponse.json(
+        {
+          error:
+            "The payment provider did not return a payment session.",
+        },
+        { status: 502 }
+      );
+    }
+
+    // ---------------------------------------------------------
+    // 7. Mark the PaySafe payment as processing.
+    //
+    // provider_reference stores the Elavon Payment Session ID
+    // until we receive the actual provider transaction ID.
     // ---------------------------------------------------------
 
     const { error: updateError } = await admin
@@ -232,7 +268,9 @@ export async function POST(request: NextRequest) {
       .update({
         status: "processing",
         provider_reference:
-          providerResult.providerReference || null,
+          providerResult.providerSessionId ||
+          providerResult.providerReference ||
+          null,
         provider_transaction_id:
           providerResult.providerTransactionId || null,
         updated_at: new Date().toISOString(),
@@ -255,13 +293,27 @@ export async function POST(request: NextRequest) {
     }
 
     // ---------------------------------------------------------
-    // 7. Send customer to provider checkout.
+    // 8. Keep the customer on PaySafe.
+    //
+    // The provider session is NOT exposed to the browser here.
+    // The PaySafe payment page will retrieve the session securely.
     // ---------------------------------------------------------
 
+    const paymentPageUrl = new URL(
+      `/pay/${encodeURIComponent(token)}/payment`,
+      request.nextUrl.origin
+    );
+
+    paymentPageUrl.searchParams.set(
+      "paymentId",
+      payment.id
+    );
+
+  
     return NextResponse.json({
-      paymentUrl: providerResult.paymentUrl,
+      paymentUrl: paymentPageUrl.toString(),
     });
-    
+
   } catch (error) {
     console.error("Payment start error:", error);
 

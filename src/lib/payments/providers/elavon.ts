@@ -7,57 +7,75 @@ import type {
 } from "./types";
 
 type ElavonOrderResponse = {
-  href?: string;
   id?: string;
+  href?: string;
 };
 
 type ElavonPaymentSessionResponse = {
-  href?: string;
   id?: string;
-  url?: string;
+  href?: string;
   hppType?: string;
-  returnUrl?: string;
-  cancelUrl?: string;
 };
 
 function createBasicAuth(
-  merchantAlias: string,
-  apiSecret: string
-) {
-  return Buffer.from(
-    `${merchantAlias}:${apiSecret}`,
-    "utf8"
-  ).toString("base64");
+  username: string,
+  password: string
+): string {
+  return `Basic ${Buffer.from(
+    `${username}:${password}`
+  ).toString("base64")}`;
 }
 
 async function parseJsonResponse<T>(
   response: Response,
   operation: string
 ): Promise<T> {
-  const responseText = await response.text();
+  const text = await response.text();
 
-  let data: T;
+  let data: unknown = null;
 
-  try {
-    data = JSON.parse(responseText) as T;
-  } catch {
-    throw new Error(
-      `Elavon ${operation} returned an invalid JSON response (${response.status}).`
-    );
+  if (text) {
+    try {
+      data = JSON.parse(text);
+    } catch {
+      throw new Error(
+        `Elavon ${operation} returned an invalid response (${response.status}).`
+      );
+    }
   }
 
   if (!response.ok) {
-    console.error(`Elavon ${operation} failed:`, {
+    console.error(`Elavon ${operation} failed`, {
       status: response.status,
-      response: data,
+      data,
     });
 
+    const providerMessage =
+      typeof data === "object" &&
+      data !== null &&
+      "message" in data &&
+      typeof (data as { message?: unknown }).message ===
+        "string"
+        ? (data as { message: string }).message
+        : null;
+
     throw new Error(
-      `Elavon ${operation} failed (${response.status}).`
+      providerMessage
+        ? `Elavon ${operation} failed (${response.status}): ${providerMessage}`
+        : `Elavon ${operation} failed (${response.status}).`
     );
   }
 
-  return data;
+  return data as T;
+}
+
+function normalizeBaseUrl(value: string): string {
+  return value.trim().replace(/\/+$/, "");
+}
+
+function getCheckoutOrigin(returnUrl: string): string {
+  const parsed = new URL(returnUrl);
+  return parsed.origin;
 }
 
 export async function createElavonPayment(
@@ -75,6 +93,12 @@ export async function createElavonPayment(
     );
   }
 
+  if (!configuration.apiBaseUrl) {
+    throw new Error(
+      "Elavon API base URL is not configured."
+    );
+  }
+
   const merchantAlias = decryptCredential(
     configuration.merchantAliasEncrypted
   );
@@ -83,15 +107,21 @@ export async function createElavonPayment(
     configuration.apiSecretEncrypted
   );
 
-  const baseUrl = configuration.apiBaseUrl
-    .trim()
-    .replace(/\/+$/, "");
-
-  if (!baseUrl) {
-    throw new Error(
-      "Elavon API base URL is not configured."
-    );
+  if (!merchantAlias.trim()) {
+    throw new Error("Elavon merchant alias is empty.");
   }
+
+  if (!apiSecret.trim()) {
+    throw new Error("Elavon API secret is empty.");
+  }
+
+  const baseUrl = normalizeBaseUrl(
+    configuration.apiBaseUrl
+  );
+
+  const originUrl = getCheckoutOrigin(
+    configuration.returnUrl
+  );
 
   const authorization = createBasicAuth(
     merchantAlias,
@@ -99,16 +129,22 @@ export async function createElavonPayment(
   );
 
   const headers = {
-    Authorization: `Basic ${authorization}`,
-    Accept: "application/json;charset=UTF-8",
+    Authorization: authorization,
+    "Content-Type": "application/json",
+    Accept: "application/json",
     "Accept-Version": "1",
-    "Content-Type": "application/json;charset=UTF-8",
   };
 
-  // ---------------------------------------------------------
-  // 1. Create Elavon Order
-  // ---------------------------------------------------------
-
+  /*
+   * 1. Create Elavon Order
+   *
+   * Elavon's OrderInput requires:
+   *
+   * total.amount
+   * total.currencyCode
+   *
+   * NOT total.currency.
+   */
   const orderResponse = await fetch(
     `${baseUrl}/orders`,
     {
@@ -117,18 +153,19 @@ export async function createElavonPayment(
       body: JSON.stringify({
         total: {
           amount: Number(configuration.amount).toFixed(2),
-          currencyCode: configuration.currency.trim().toUpperCase(),
+          currencyCode:
+            configuration.currency.toUpperCase(),
         },
-        description: `PaySafe payment ${configuration.paymentId}`,
+        description:
+          `PaySafe payment ${configuration.paymentId}`,
         customReference: configuration.paymentId,
         ...(configuration.customerEmail
           ? {
-              shopperEmailAddress: configuration.customerEmail,
+              shopperEmailAddress:
+                configuration.customerEmail,
             }
           : {}),
       }),
-
-      
       cache: "no-store",
     }
   );
@@ -141,28 +178,28 @@ export async function createElavonPayment(
 
   if (!order.href) {
     throw new Error(
-      "Elavon order creation did not return an order resource URL."
+      "Elavon order creation succeeded but no order URL was returned."
     );
   }
 
-  // ---------------------------------------------------------
-  // 2. Create Elavon Payment Session
-  // ---------------------------------------------------------
-
-  const paymentSessionResponse = await fetch(
-    `${baseUrl}/payment-sessions`,
-    {
-      method: "POST",
-      headers,
-      body: JSON.stringify({
-        order: order.href,
-        returnUrl: configuration.returnUrl,
-        cancelUrl: configuration.returnUrl,
-        doCreateTransaction: true,
-      }),
-      cache: "no-store",
-    }
-  );
+  /*
+   * 2. Create Elavon Hosted Payment Fields session
+   */
+  const paymentSessionResponse =
+    await fetch(
+      `${baseUrl}/payment-sessions`,
+      {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          hppType: "hostedPaymentFields",
+          order: order.href,
+          originUrl,
+          doCreateTransaction: true,
+        }),
+        cache: "no-store",
+      }
+    );
 
   const paymentSession =
     await parseJsonResponse<ElavonPaymentSessionResponse>(
@@ -170,27 +207,26 @@ export async function createElavonPayment(
       "payment session creation"
     );
 
-  // The EPG PaymentSession resource exposes `url` as the
-  // URL shoppers use for the hosted payment page.
-  if (!paymentSession.url) {
-    console.error(
-      "Elavon payment session did not contain a checkout URL:",
-      {
-        id: paymentSession.id,
-        href: paymentSession.href,
-        hppType: paymentSession.hppType,
-      }
-    );
-
+  if (!paymentSession.id) {
     throw new Error(
-      "Elavon payment session did not return a hosted checkout URL."
+      "Elavon payment session creation succeeded but no session ID was returned."
+    );
+  }
+
+  if (
+    paymentSession.hppType &&
+    paymentSession.hppType !==
+      "hostedPaymentFields"
+  ) {
+    throw new Error(
+      `Elavon returned an unexpected payment session type: ${paymentSession.hppType}`
     );
   }
 
   return {
-    paymentUrl: paymentSession.url,
+    paymentUrl: "",
+    providerSessionId: paymentSession.id,
     providerTransactionId: null,
-    providerReference:
-      paymentSession.id || order.id || null,
+    providerReference: paymentSession.id,
   };
 }
