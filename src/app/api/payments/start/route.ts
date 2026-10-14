@@ -34,6 +34,31 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: 'Payment link not found in database.' }, { status: 404 });
   }
 
+  // Prevent duplicate payment: single-use link protection
+  if (linkData.status === 'paid' || linkData.paid_at) {
+    return NextResponse.json(
+      { error: 'This payment link has already been settled and completed.' },
+      { status: 400 }
+    );
+  }
+
+  if (linkData.status === 'cancelled') {
+    return NextResponse.json(
+      { error: 'This payment link has been cancelled.' },
+      { status: 400 }
+    );
+  }
+
+  if (
+    linkData.status === 'expired' ||
+    (linkData.expires_at && new Date(linkData.expires_at).getTime() <= Date.now())
+  ) {
+    return NextResponse.json(
+      { error: 'This payment link has expired.' },
+      { status: 400 }
+    );
+  }
+
   const credentials = Buffer.from(
     `${process.env.ELAVON_MERCHANT_ALIAS}:${process.env.ELAVON_SECRET_KEY}`
   ).toString('base64');
@@ -69,13 +94,20 @@ export async function GET(request: Request) {
       );
     }
 
+    // Save Elavon session ID in Supabase payment_links
+    await supabase
+      .from('payment_links')
+      .update({ gateway_payment_id: elavonData.id })
+      .eq('id', linkData.id);
+
     return NextResponse.json({
       success: true,
       checkout_url: elavonData.url || elavonData.href,
       payment_id: elavonData.id,
     });
-  } catch (err: any) {
+  } catch (err: unknown) {
     console.error('API Route Error:', err);
-    return NextResponse.json({ error: err.message }, { status: 500 });
+    const message = err instanceof Error ? err.message : 'Failed to initialize payment';
+    return NextResponse.json({ error: message }, { status: 500 });
   }
 }

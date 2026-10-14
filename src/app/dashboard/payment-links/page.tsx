@@ -15,7 +15,9 @@ import {
 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 
-const statusFilters = ["All", "Active", "Expired", "Cancelled"] as const;
+import { CheckCircle2 } from "lucide-react";
+
+const statusFilters = ["All", "Active", "Paid", "Expired", "Cancelled"] as const;
 
 type StatusFilter = (typeof statusFilters)[number];
 
@@ -26,7 +28,9 @@ type PaymentLink = {
   currency: string;
   customer_name: string | null;
   customer_email: string | null;
-  status: "active" | "expired" | "cancelled";
+  status: "active" | "paid" | "expired" | "cancelled" | "failed";
+  paid_at?: string | null;
+  gateway_payment_id?: string | null;
   expires_at: string;
   created_at: string;
   merchants: {
@@ -46,6 +50,8 @@ type RawPaymentLink = {
   customer_name: string | null;
   customer_email: string | null;
   status: string;
+  paid_at?: string | null;
+  gateway_payment_id?: string | null;
   expires_at: string;
   created_at: string;
   merchants:
@@ -68,15 +74,27 @@ type RawPaymentLink = {
     | null;
 };
 
-function getDisplayStatus(link: PaymentLink) {
+function getDisplayStatus(link: PaymentLink): "paid" | "expired" | "cancelled" | "failed" | "active" {
+  if (link.status === "paid" || Boolean(link.paid_at)) {
+    return "paid";
+  }
+
+  if (link.status === "failed") {
+    return "failed";
+  }
+
+  if (link.status === "cancelled") {
+    return "cancelled";
+  }
+
   if (
     link.status === "active" &&
     new Date(link.expires_at).getTime() <= Date.now()
   ) {
-    return "expired" as const;
+    return "expired";
   }
 
-  return link.status;
+  return "active";
 }
 
 function formatDate(value: string) {
@@ -154,6 +172,8 @@ export default function PaymentLinksPage() {
           customer_name,
           customer_email,
           status,
+          paid_at,
+          gateway_payment_id,
           expires_at,
           created_at,
           merchants (
@@ -189,24 +209,32 @@ export default function PaymentLinksPage() {
        */
       const rows = (data ?? []) as unknown as RawPaymentLink[];
 
-      const normalizedLinks: PaymentLink[] = rows.map((link) => ({
-        id: link.id,
-        description: link.description,
-        amount: link.amount,
-        currency: link.currency,
-        customer_name: link.customer_name,
-        customer_email: link.customer_email,
-        status:
-          link.status === "expired"
-            ? "expired"
-            : link.status === "cancelled"
-              ? "cancelled"
-              : "active",
-        expires_at: link.expires_at,
-        created_at: link.created_at,
-        merchants: normalizeRelation(link.merchants),
-        brands: normalizeRelation(link.brands),
-      }));
+      const normalizedLinks: PaymentLink[] = rows.map((link) => {
+        const isPaid = link.status === "paid" || Boolean(link.paid_at);
+        return {
+          id: link.id,
+          description: link.description,
+          amount: link.amount,
+          currency: link.currency,
+          customer_name: link.customer_name,
+          customer_email: link.customer_email,
+          status: isPaid
+            ? "paid"
+            : link.status === "failed"
+              ? "failed"
+              : link.status === "expired"
+                ? "expired"
+                : link.status === "cancelled"
+                  ? "cancelled"
+                  : "active",
+          paid_at: link.paid_at ?? null,
+          gateway_payment_id: link.gateway_payment_id ?? null,
+          expires_at: link.expires_at,
+          created_at: link.created_at,
+          merchants: normalizeRelation(link.merchants),
+          brands: normalizeRelation(link.brands),
+        };
+      });
 
       setPaymentLinks(normalizedLinks);
       setLoading(false);
@@ -252,6 +280,15 @@ export default function PaymentLinksPage() {
   const renderStatus = (link: PaymentLink) => {
     const status = getDisplayStatus(link);
 
+    if (status === "paid") {
+      return (
+        <span className="inline-flex items-center gap-1 rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-[10px] font-mono font-bold uppercase tracking-wider text-emerald-700">
+          <CheckCircle2 className="w-3 h-3" />
+          Paid
+        </span>
+      );
+    }
+
     if (status === "active") {
       return (
         <span className="inline-flex items-center rounded-full border border-blue-200 bg-blue-50 px-2.5 py-1 text-[10px] font-mono font-bold uppercase tracking-wider text-blue-700">
@@ -264,6 +301,14 @@ export default function PaymentLinksPage() {
       return (
         <span className="inline-flex items-center rounded-full border border-amber-200 bg-amber-50 px-2.5 py-1 text-[10px] font-mono font-bold uppercase tracking-wider text-amber-700">
           Expired
+        </span>
+      );
+    }
+
+    if (status === "failed") {
+      return (
+        <span className="inline-flex items-center rounded-full border border-rose-200 bg-rose-50 px-2.5 py-1 text-[10px] font-mono font-bold uppercase tracking-wider text-rose-700">
+          Failed
         </span>
       );
     }

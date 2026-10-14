@@ -10,6 +10,9 @@ import {
   Store,
   Briefcase,
   CalendarDays,
+  CheckCircle2,
+  Receipt,
+  ShieldCheck,
 } from "lucide-react";
 import { createClient } from "@/lib/supabase/server";
 
@@ -20,8 +23,11 @@ type PaymentLinkDetail = {
   currency: string;
   customer_name: string | null;
   customer_email: string | null;
-  status: "active" | "expired" | "cancelled";
+  status: "active" | "paid" | "expired" | "cancelled" | "failed";
   link_token: string;
+  gateway_payment_id?: string | null;
+  paid_at?: string | null;
+  payment_details?: Record<string, unknown> | null;
   expires_at: string;
   created_at: string;
 
@@ -50,6 +56,23 @@ type PaymentLinkDetail = {
         website: string | null;
       }[]
     | null;
+
+  payments?:
+    | {
+        id: string;
+        status: string;
+        provider_transaction_id: string | null;
+        provider_reference: string | null;
+        created_at: string;
+      }
+    | {
+        id: string;
+        status: string;
+        provider_transaction_id: string | null;
+        provider_reference: string | null;
+        created_at: string;
+      }[]
+    | null;
 };
 
 type PaymentLinkPageProps = {
@@ -70,13 +93,26 @@ function normalizeRelation<T>(
 
 function getDisplayStatus(
   status: PaymentLinkDetail["status"],
-  expiresAt: string
-) {
+  expiresAt: string,
+  paidAt?: string | null
+): "paid" | "expired" | "cancelled" | "failed" | "active" {
+  if (status === "paid" || Boolean(paidAt)) {
+    return "paid";
+  }
+
+  if (status === "failed") {
+    return "failed";
+  }
+
+  if (status === "cancelled") {
+    return "cancelled";
+  }
+
   if (
     status === "active" &&
     new Date(expiresAt).getTime() <= Date.now()
   ) {
-    return "expired" as const;
+    return "expired";
   }
 
   return status;
@@ -94,14 +130,6 @@ function formatAmount(
   return `${currency.toUpperCase()} ${numericAmount.toFixed(2)}`;
 }
 
-function formatDate(value: string) {
-  return new Date(value).toLocaleDateString("en-US", {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-  });
-}
-
 function formatDateTime(value: string) {
   return new Date(value).toLocaleString("en-US", {
     month: "short",
@@ -113,8 +141,12 @@ function formatDateTime(value: string) {
 }
 
 function getStatusClasses(
-  status: "active" | "expired" | "cancelled"
+  status: "active" | "paid" | "expired" | "cancelled" | "failed"
 ) {
+  if (status === "paid") {
+    return "border-emerald-200 bg-emerald-50 text-emerald-700";
+  }
+
   if (status === "active") {
     return "border-blue-200 bg-blue-50 text-blue-700";
   }
@@ -123,18 +155,30 @@ function getStatusClasses(
     return "border-amber-200 bg-amber-50 text-amber-700";
   }
 
+  if (status === "failed") {
+    return "border-rose-200 bg-rose-50 text-rose-700";
+  }
+
   return "border-slate-200 bg-slate-50 text-slate-600";
 }
 
 function getStatusLabel(
-  status: "active" | "expired" | "cancelled"
+  status: "active" | "paid" | "expired" | "cancelled" | "failed"
 ) {
+  if (status === "paid") {
+    return "Paid";
+  }
+
   if (status === "active") {
     return "Active";
   }
 
   if (status === "expired") {
     return "Expired";
+  }
+
+  if (status === "failed") {
+    return "Failed";
   }
 
   return "Cancelled";
@@ -162,6 +206,9 @@ export default async function PaymentLinkDetailPage({
       customer_email,
       status,
       link_token,
+      gateway_payment_id,
+      paid_at,
+      payment_details,
       expires_at,
       created_at,
       merchants (
@@ -173,6 +220,13 @@ export default async function PaymentLinkDetailPage({
         name,
         customer_facing_name,
         website
+      ),
+      payments (
+        id,
+        status,
+        provider_transaction_id,
+        provider_reference,
+        created_at
       )
     `)
     .eq("id", id.trim())
@@ -202,9 +256,17 @@ export default async function PaymentLinkDetailPage({
     rawLink.brands
   );
 
+  const payment = normalizeRelation(
+    rawLink.payments
+  );
+
+  const providerTransactionId =
+    payment?.provider_transaction_id || rawLink.gateway_payment_id;
+
   const displayStatus = getDisplayStatus(
     rawLink.status,
-    rawLink.expires_at
+    rawLink.expires_at,
+    rawLink.paid_at
   );
 
   /*
@@ -328,10 +390,77 @@ export default async function PaymentLinkDetailPage({
             Open Payment Page
           </a>
         </div>
+
+        {displayStatus === "paid" && (
+          <div className="mt-4 p-3 bg-emerald-500/10 border border-emerald-500/20 rounded-md flex items-center gap-2 text-emerald-300 text-xs font-mono">
+            <ShieldCheck className="w-4 h-4 shrink-0 text-emerald-400" />
+            <span>Single-Use Settled: This payment link is locked and will display the completion receipt to customers.</span>
+          </div>
+        )}
       </section>
 
       {/* DETAILS */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {/* TRANSACTION & SETTLEMENT */}
+        <section className={`bg-white border rounded-lg p-6 lg:col-span-2 ${
+          displayStatus === "paid" ? "border-emerald-200 shadow-sm" : "border-[#E2E8F0]"
+        }`}>
+          <div className="flex items-center justify-between pb-4 border-b border-[#E2E8F0]">
+            <div className="flex items-center gap-2">
+              <Receipt className="w-4 h-4 text-[#2563EB]" />
+              <h2 className="text-sm font-bold text-[#0F172A]">
+                Transaction & Settlement
+              </h2>
+            </div>
+
+            <span
+              className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[10px] font-mono font-bold uppercase tracking-wider ${getStatusClasses(
+                displayStatus
+              )}`}
+            >
+              {displayStatus === "paid" && <CheckCircle2 className="w-3 h-3" />}
+              {getStatusLabel(displayStatus)}
+            </span>
+          </div>
+
+          <div className="mt-5 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
+            <div>
+              <p className="text-[10px] font-mono font-bold uppercase tracking-widest text-[#64748B]">
+                Provider Transaction ID
+              </p>
+              <p className="mt-1 text-xs font-mono font-bold text-[#0F172A] break-all">
+                {providerTransactionId || "Awaiting transaction"}
+              </p>
+            </div>
+
+            <div>
+              <p className="text-[10px] font-mono font-bold uppercase tracking-widest text-[#64748B]">
+                Paid Date
+              </p>
+              <p className="mt-1 text-xs font-mono text-[#0F172A]">
+                {rawLink.paid_at ? formatDateTime(rawLink.paid_at) : "Not yet settled"}
+              </p>
+            </div>
+
+            <div>
+              <p className="text-[10px] font-mono font-bold uppercase tracking-widest text-[#64748B]">
+                Amount
+              </p>
+              <p className="mt-1 text-sm font-mono font-bold text-[#0F172A]">
+                {formatAmount(rawLink.amount, rawLink.currency)}
+              </p>
+            </div>
+
+            <div>
+              <p className="text-[10px] font-mono font-bold uppercase tracking-widest text-[#64748B]">
+                Customer
+              </p>
+              <p className="mt-1 text-xs font-semibold text-[#0F172A] truncate">
+                {rawLink.customer_name || rawLink.customer_email || "Not specified"}
+              </p>
+            </div>
+          </div>
+        </section>
         {/* CUSTOMER */}
         <section className="bg-white border border-[#E2E8F0] rounded-lg p-6">
           <div className="flex items-center gap-2 pb-4 border-b border-[#E2E8F0]">
