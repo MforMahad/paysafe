@@ -10,6 +10,10 @@ import {
   ShieldAlert,
 } from 'lucide-react';
 import { PayButton } from './PayButton';
+import {
+  verifyAndSettlePaymentLink,
+  type VerifiablePaymentLink,
+} from '@/lib/payment-verification';
 
 export const dynamic = 'force-dynamic';
 
@@ -105,7 +109,46 @@ export default async function CheckoutPage({ params }: PageProps) {
   const merchant = Array.isArray(linkData.merchants) ? linkData.merchants[0] : linkData.merchants;
   const brandName = brand?.customer_facing_name || brand?.name || 'PaySafe Merchant';
 
-  const isPaid = linkData.status === 'paid' || Boolean(linkData.paid_at);
+  // ---------------------------------------------------------------------------
+  // On-the-fly status verification.
+  //
+  // We do NOT rely solely on the customer hitting the return page (or a webhook)
+  // to mark the link as paid — those can be skipped, blocked by the browser, or
+  // lost when testers navigate away from the HPP. If a gateway session already
+  // exists for this link, we ask Elavon directly whether it has settled and,
+  // if so, update Supabase immediately BEFORE we decide which screen to render.
+  // This enforces the single-use guarantee on every visit to /pay/[token].
+  // ---------------------------------------------------------------------------
+  let dbIsPaid = linkData.status === 'paid' || Boolean(linkData.paid_at);
+  let dbPaidAt = linkData.paid_at as string | null | undefined;
+
+  if (!dbIsPaid && linkData.gateway_payment_id) {
+    const link: VerifiablePaymentLink = {
+      id: linkData.id,
+      amount: linkData.amount,
+      currency: linkData.currency,
+      link_token: linkData.link_token,
+      gateway_payment_id: linkData.gateway_payment_id,
+      status: linkData.status,
+    };
+
+    const outcome = await verifyAndSettlePaymentLink(supabase, link);
+
+    if (outcome.error) {
+      console.error(
+        `[/pay/${token}] On-the-fly verification failed: ${outcome.error}`
+      );
+    }
+
+    if (outcome.isPaid) {
+      // The gateway confirms this transaction is settled. Treat the link as
+      // paid for this render so we show the "already completed" screen.
+      dbIsPaid = true;
+      dbPaidAt = new Date().toISOString();
+    }
+  }
+
+  const isPaid = dbIsPaid;
   const isCancelled = linkData.status === 'cancelled';
   const isExpired = checkIsExpired(linkData.expires_at, isPaid, linkData.status);
 
@@ -148,10 +191,10 @@ export default async function CheckoutPage({ params }: PageProps) {
               </span>
             </div>
 
-            {linkData.paid_at && (
+            {dbPaidAt && (
               <div className="flex items-center justify-between">
                 <span className="text-slate-400">Date Paid</span>
-                <span className="text-slate-300">{formatDateTime(linkData.paid_at)}</span>
+                <span className="text-slate-300">{formatDateTime(dbPaidAt)}</span>
               </div>
             )}
 
