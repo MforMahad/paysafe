@@ -2,6 +2,22 @@ import { NextResponse } from 'next/server';
 import { createServerClient } from '@supabase/ssr';
 import { cookies } from 'next/headers';
 
+// Elavon's Converge/payment-links endpoint rejects strict JSON validation
+// failures with a generic "badRequest" message. Keep the merchant-facing
+// description short and free of control/special characters that trip that
+// validation. Limit to 100 chars as required.
+function sanitizeDescription(raw: string | null | undefined): string | undefined {
+  if (!raw) return undefined;
+  const cleaned = raw
+    // Strip control characters (0x00-0x1F and 0x7F) that Converge rejects.
+    .replace(/[\u0000-\u001F\u007F]/g, ' ')
+    // Collapse runs of whitespace and trim the edges.
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 100);
+  return cleaned.length > 0 ? cleaned : undefined;
+}
+
 export async function GET(request: Request) {
   // ---------------------------------------------------------------------------
   // 0. Environment sanity check.
@@ -143,23 +159,66 @@ export async function GET(request: Request) {
           amount: Number(linkData.amount).toFixed(2),
           currencyCode: linkData.currency || 'USD',
         },
-        // Send our link token as the merchant reference so webhooks and the
-        // gateway can be correlated back to this payment link.
-        reference: linkData.link_token,
-        description: linkData.description || undefined,
-        // Dynamically resolved return URL so Elavon sends the customer back to
-        // the live production return page after completing payment.
+        // Correlate the Elavon session back to this payment link using the
+        // documented orderReference field (NOT a custom "reference" key, which
+        // Converge rejects with "Unrecognized field name").
+        orderReference: linkData.link_token,
+        orderReferenceLabel: 'Order',
+        // Sanitized + length-capped description to satisfy strict validation.
+        description: sanitizeDescription(linkData.description),
+        // Dynamically resolved, absolute return URL so Elavon sends the customer
+        // back to the live production return page after completing payment.
         returnUrl,
       }),
     });
 
-    const elavonData = await elavonRes.json();
+    // Read the raw body as text first so we can log EXACTLY what Elavon
+    // returned even when the body is not valid JSON (some gateway errors come
+    // back as HTML or plain text from the proxy layer).
+    const rawBody = await elavonRes.text();
 
     if (!elavonRes.ok) {
-      console.error('[payments/start] Elavon Error:', elavonData);
+      console.error(
+        `[payments/start] Elavon rejected session creation. ` +
+          `HTTP ${elavonRes.status} ${elavonRes.statusText}. Raw response body:\n${rawBody}`
+      );
+
+      let failureMessage = 'Failed to create payment session.';
+      try {
+        const parsed = JSON.parse(rawBody);
+        // Elavon returns { failures: [{ code, description, field }, ...] }.
+        const failures = Array.isArray(parsed?.failures) ? parsed.failures : [];
+        if (failures.length > 0) {
+          failureMessage = failures
+            .map(
+              (f: { code?: string; description?: string; field?: string | null }) =>
+                `${f.code || 'error'}${f.field ? ` (field: ${f.field})` : ''}: ${f.description || ''}`
+            )
+            .join(' | ');
+        }
+      } catch {
+        // Body was not JSON; fall back to a trimmed snippet for the client.
+        failureMessage = rawBody.slice(0, 200) || failureMessage;
+      }
+
+      return NextResponse.json({ error: failureMessage }, { status: 500 });
+    }
+
+    let elavonData: {
+      id?: string;
+      url?: string;
+      href?: string;
+      orderReference?: string;
+    };
+    try {
+      elavonData = JSON.parse(rawBody);
+    } catch {
+      console.error(
+        '[payments/start] Elavon returned a non-JSON success body:\n' + rawBody
+      );
       return NextResponse.json(
-        { error: elavonData.failures?.[0]?.description || 'Failed to create payment session.' },
-        { status: 500 }
+        { error: 'Unexpected response from payment gateway.' },
+        { status: 502 }
       );
     }
 
