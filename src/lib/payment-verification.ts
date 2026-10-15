@@ -80,6 +80,24 @@ export function getElavonAuthHeader(): string {
   return `Basic ${credentials}`;
 }
 
+/**
+ * Elavon refers to a payment link either by bare id or by full resource href
+ * (return-URL params, notification payloads). Reduce either form to the bare
+ * id stored in `payment_links.gateway_payment_id`.
+ */
+export function extractGatewayId(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null;
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+
+  try {
+    const segments = new URL(trimmed).pathname.split('/').filter(Boolean);
+    return segments.at(-1) ?? null;
+  } catch {
+    return trimmed;
+  }
+}
+
 /** Normalise a raw gateway status into a boolean "settled" flag. */
 export function isSettledStatus(rawStatus: unknown): boolean {
   const status = typeof rawStatus === 'string' ? rawStatus.toLowerCase() : '';
@@ -138,6 +156,11 @@ export async function fetchElavonPaymentLink(
 /**
  * Persist a settled payment. Updates the `payment_links` row to `paid` and
  * inserts a corresponding row into `payments` (idempotently).
+ *
+ * Returns true only when the database confirms that a row now holds
+ * `status = 'paid'` and a `paid_at` timestamp. `supabase` must be a
+ * service-role client (see `createAdminClient`): under RLS an UPDATE that
+ * matches no permitted rows succeeds with zero rows and no error.
  */
 export async function markPaymentLinkAsPaid(
   supabase: SupabaseClient,
@@ -145,19 +168,64 @@ export async function markPaymentLinkAsPaid(
   elavonData: Record<string, unknown>
 ): Promise<boolean> {
   const timestamp = new Date().toISOString();
+  const patch = {
+    status: 'paid',
+    paid_at: timestamp,
+    payment_details: elavonData ?? {},
+  };
 
-  // 1. Update the payment_links row.
-  const { error: updateError } = await supabase
-    .from('payment_links')
-    .update({
-      status: 'paid',
-      paid_at: timestamp,
-      payment_details: elavonData ?? {},
-    })
-    .eq('id', link.id);
+  // 1. Update the payment_links row. Match by primary key first, then fall back
+  //    to the public token and the Elavon session id.
+  const matchers: Array<[column: string, value: string | null | undefined]> = [
+    ['id', link.id],
+    ['link_token', link.link_token],
+    ['gateway_payment_id', link.gateway_payment_id],
+  ];
 
-  if (updateError) {
-    console.error('[verify] Failed to update payment_links:', updateError);
+  let persisted = false;
+
+  for (const [column, value] of matchers) {
+    if (!value) continue;
+
+    const { data: updatedRows, error: updateError } = await supabase
+      .from('payment_links')
+      .update(patch)
+      .eq(column, value)
+      .select('id, status, paid_at');
+
+    if (updateError) {
+      console.error(
+        `[verify] Failed to update payment_links (match ${column}=${value}):`,
+        updateError
+      );
+      continue;
+    }
+
+    if (!updatedRows || updatedRows.length === 0) {
+      console.error(
+        `[verify] UPDATE payment_links matched 0 rows (match ${column}=${value}). ` +
+          'Check that the client uses SUPABASE_SERVICE_ROLE_KEY and is not carrying a user session.'
+      );
+      continue;
+    }
+
+    persisted = updatedRows.some((row) => row.status === 'paid' && Boolean(row.paid_at));
+
+    if (persisted) {
+      break;
+    }
+
+    console.error(
+      `[verify] UPDATE payment_links returned rows but status/paid_at were not persisted (match ${column}=${value}):`,
+      updatedRows
+    );
+  }
+
+  if (!persisted) {
+    console.error(
+      `[verify] Payment for link ${link.id} (token ${link.link_token}) settled at the gateway ` +
+        'but could NOT be recorded in payment_links.'
+    );
     return false;
   }
 
@@ -231,7 +299,12 @@ export async function verifyAndSettlePaymentLink(
     }
 
     const updated = await markPaymentLinkAsPaid(supabase, link, elavonData);
-    return { isPaid: true, gatewayStatus, updated };
+    return {
+      isPaid: true,
+      gatewayStatus,
+      updated,
+      ...(updated ? {} : { error: 'Payment settled at gateway but database update failed.' }),
+    };
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     console.error('[verify] verifyAndSettlePaymentLink failed:', message);

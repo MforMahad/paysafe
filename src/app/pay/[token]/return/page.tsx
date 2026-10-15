@@ -2,17 +2,42 @@
 
 import { useEffect, useState, use } from 'react';
 
-export default function PaymentReturnPage({ params }: { params: Promise<{ token: string }> }) {
-  const resolvedParams = use(params);
+type ReturnSearchParams = { [key: string]: string | string[] | undefined };
+
+function firstParam(value: string | string[] | undefined): string | undefined {
+  return Array.isArray(value) ? value[0] : value;
+}
+
+export default function PaymentReturnPage({
+  params,
+  searchParams,
+}: {
+  params: Promise<{ token: string }>;
+  searchParams: Promise<ReturnSearchParams>;
+}) {
+  const { token } = use(params);
+  const query = use(searchParams);
+  const sessionId = firstParam(query.sessionId);
+  const paymentLink = firstParam(query.paymentLink);
   const [status, setStatus] = useState<'verifying' | 'paid' | 'error'>('verifying');
 
   useEffect(() => {
     async function verifyPayment() {
+      // Forward Elavon's return params so the server can fall back to matching
+      // on gateway_payment_id. They are only used as lookup keys; the paid
+      // status itself is always confirmed server-side with Elavon.
+      const verifyParams = new URLSearchParams({ token });
+      if (sessionId) verifyParams.set('sessionId', sessionId);
+      if (paymentLink) verifyParams.set('paymentLink', paymentLink);
+
       try {
-        const res = await fetch(`/api/payments/verify?token=${resolvedParams.token}`);
+        const res = await fetch(`/api/payments/verify?${verifyParams.toString()}`, {
+          cache: 'no-store',
+        });
         const data = await res.json();
 
-        if (data.status === 'paid') {
+        // Only report success once the server has confirmed the DB write.
+        if (res.ok && data.status === 'paid') {
           setStatus('paid');
         } else {
           setStatus('error');
@@ -23,7 +48,7 @@ export default function PaymentReturnPage({ params }: { params: Promise<{ token:
     }
 
     verifyPayment();
-  }, [resolvedParams.token]);
+  }, [token, sessionId, paymentLink]);
 
   return (
     <div className="min-h-screen bg-slate-950 text-white flex items-center justify-center p-4">

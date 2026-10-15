@@ -1,6 +1,5 @@
 import { NextResponse } from 'next/server';
-import { createServerClient } from '@supabase/ssr';
-import { cookies } from 'next/headers';
+import { createAdminClient } from '@/lib/supabase/admin';
 
 // Elavon's Converge/payment-links endpoint rejects strict JSON validation
 // failures with a generic "badRequest" message. Keep the merchant-facing
@@ -88,18 +87,9 @@ export async function GET(request: Request) {
   // The return page verifies the transaction on the fly and updates the DB.
   const returnUrl = `${baseUrl}/pay/${encodeURIComponent(rawToken)}/return`;
 
-  const cookieStore = await cookies();
-  const supabase = createServerClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY!,
-    {
-      cookies: {
-        get(name: string) {
-          return cookieStore.get(name)?.value;
-        },
-      },
-    }
-  );
+  // Service-role client with no cookies so the gateway_payment_id write below is
+  // never downgraded to a logged-in user's RLS context.
+  const supabase = createAdminClient();
 
   const { data: linkData, error: linkError } = await supabase
     .from('payment_links')
@@ -223,13 +213,18 @@ export async function GET(request: Request) {
     }
 
     // Save Elavon session ID in Supabase payment_links
-    const { error: updateError } = await supabase
+    const { data: updatedRows, error: updateError } = await supabase
       .from('payment_links')
       .update({ gateway_payment_id: elavonData.id })
-      .eq('id', linkData.id);
+      .eq('id', linkData.id)
+      .select('id');
 
     if (updateError) {
       console.error('[payments/start] Failed to persist gateway_payment_id:', updateError);
+    } else if (!updatedRows || updatedRows.length === 0) {
+      console.error(
+        `[payments/start] UPDATE payment_links matched 0 rows while saving gateway_payment_id for link ${linkData.id}.`
+      );
     }
 
     return NextResponse.json({
