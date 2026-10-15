@@ -15,8 +15,41 @@
 
 import type { SupabaseClient } from '@supabase/supabase-js';
 
-/** Base URL for the Elavon Payment Gateway API (sandbox environment). */
-export const ELAVON_API_BASE_URL = 'https://api.sandbox.elavonpayments.com';
+/** Sandbox API host, used only outside production when ELAVON_API_BASE_URL is unset. */
+const ELAVON_SANDBOX_API_BASE_URL = 'https://api.sandbox.elavonpayments.com';
+
+/** Upper bound for any single Elavon API call, well inside serverless limits. */
+export const ELAVON_REQUEST_TIMEOUT_MS = 8000;
+
+/** Error raised for failed Elavon API calls; `status` is set for HTTP errors. */
+export class ElavonApiError extends Error {
+  constructor(
+    message: string,
+    readonly status?: number,
+    readonly body?: unknown
+  ) {
+    super(message);
+    this.name = 'ElavonApiError';
+  }
+}
+
+/**
+ * Elavon API base URL from ELAVON_API_BASE_URL. Production must set it
+ * explicitly so a deploy can never silently talk to the sandbox (or vice versa).
+ */
+export function getElavonApiBaseUrl(): string {
+  const configured = process.env.ELAVON_API_BASE_URL?.trim().replace(/\/+$/, '');
+
+  if (configured) {
+    return configured;
+  }
+
+  if (process.env.NODE_ENV === 'production') {
+    throw new ElavonApiError('ELAVON_API_BASE_URL is not configured.');
+  }
+
+  return ELAVON_SANDBOX_API_BASE_URL;
+}
 
 /** Shape of the relevant fields we read off a `payment_links` row. */
 export interface VerifiablePaymentLink {
@@ -59,6 +92,10 @@ export function collectMissingEnvIssues(): string[] {
     ['NEXT_PUBLIC_SUPABASE_URL', process.env.NEXT_PUBLIC_SUPABASE_URL],
     ['SUPABASE_SERVICE_ROLE_KEY', process.env.SUPABASE_SERVICE_ROLE_KEY],
   ];
+
+  if (process.env.NODE_ENV === 'production') {
+    required.push(['ELAVON_API_BASE_URL', process.env.ELAVON_API_BASE_URL]);
+  }
 
   return required
     .filter(([, value]) => !value)
@@ -105,164 +142,188 @@ export function isSettledStatus(rawStatus: unknown): boolean {
 }
 
 /**
+ * Single entry point for Elavon API calls: applies the configured base URL,
+ * Basic auth, API version header, no-store caching and an 8s timeout.
+ * Network failures and timeouts are rethrown as ElavonApiError (no status).
+ */
+export async function elavonFetch(path: string, init: RequestInit = {}): Promise<Response> {
+  const headers = new Headers(init.headers);
+  headers.set('Accept', 'application/json');
+  headers.set('Accept-Version', '1');
+  headers.set('Authorization', getElavonAuthHeader());
+
+  try {
+    return await fetch(`${getElavonApiBaseUrl()}${path}`, {
+      ...init,
+      headers,
+      // Never cache gateway calls — status can change at any moment.
+      cache: 'no-store',
+      signal: AbortSignal.timeout(ELAVON_REQUEST_TIMEOUT_MS),
+    });
+  } catch (networkErr: unknown) {
+    if (networkErr instanceof ElavonApiError) {
+      throw networkErr;
+    }
+
+    const timedOut = networkErr instanceof Error && networkErr.name === 'TimeoutError';
+    const message = timedOut
+      ? `timed out after ${ELAVON_REQUEST_TIMEOUT_MS}ms`
+      : networkErr instanceof Error
+        ? networkErr.message
+        : String(networkErr);
+
+    console.error(`[elavon] ${init.method ?? 'GET'} ${path} failed: ${message}`, networkErr);
+    throw new ElavonApiError(`Elavon request failed: ${message}`);
+  }
+}
+
+/**
  * Fetch the current state of a payment link directly from Elavon.
- * Throws on network failure or a non-2xx response so callers can log it.
+ * Throws ElavonApiError on network failure, timeout, non-JSON body or a
+ * non-2xx response (with `status` set) so callers can branch on it.
  */
 export async function fetchElavonPaymentLink(
   gatewayPaymentId: string
 ): Promise<Record<string, unknown>> {
-  let response: Response;
+  const response = await elavonFetch(`/payment-links/${encodeURIComponent(gatewayPaymentId)}`);
+  const rawBody = await response.text();
 
+  let data: unknown = null;
   try {
-    response = await fetch(
-      `${ELAVON_API_BASE_URL}/payment-links/${encodeURIComponent(gatewayPaymentId)}`,
-      {
-        method: 'GET',
-        headers: {
-          Accept: 'application/json',
-          'Accept-Version': '1',
-          Authorization: getElavonAuthHeader(),
-        },
-        // Never cache gateway lookups — status can change at any moment.
-        cache: 'no-store',
-      }
-    );
-  } catch (networkErr: unknown) {
-    const message =
-      networkErr instanceof Error ? networkErr.message : String(networkErr);
-    console.error('[verify] Elavon fetch threw a network error:', networkErr);
-    throw new Error(`Elavon request failed: ${message}`);
-  }
-
-  let data: Record<string, unknown> = {};
-  try {
-    data = (await response.json()) as Record<string, unknown>;
-  } catch (parseErr: unknown) {
-    console.error('[verify] Failed to parse Elavon response JSON:', parseErr);
-    throw new Error('Elavon returned a non-JSON response.');
+    data = rawBody ? JSON.parse(rawBody) : null;
+  } catch {
+    // Handled below: error bodies may legitimately be HTML/plain text.
   }
 
   if (!response.ok) {
     console.error(
-      `[verify] Elavon API responded with HTTP ${response.status}:`,
-      data
+      `[elavon] GET /payment-links/${gatewayPaymentId} responded with HTTP ${response.status}:`,
+      data ?? rawBody.slice(0, 500)
     );
-    throw new Error(`Elavon API responded with status ${response.status}.`);
+    throw new ElavonApiError(
+      `Elavon API responded with status ${response.status}.`,
+      response.status,
+      data ?? rawBody
+    );
   }
 
-  return data;
+  if (!data || typeof data !== 'object' || Array.isArray(data)) {
+    console.error('[elavon] Expected a JSON object from Elavon, got:', rawBody.slice(0, 500));
+    throw new ElavonApiError('Elavon returned a non-JSON response.', response.status);
+  }
+
+  return data as Record<string, unknown>;
 }
 
 /**
  * Persist a settled payment. Updates the `payment_links` row to `paid` and
- * inserts a corresponding row into `payments` (idempotently).
+ * inserts a corresponding row into `payments`.
  *
- * Returns true only when the database confirms that a row now holds
- * `status = 'paid'` and a `paid_at` timestamp. `supabase` must be a
- * service-role client (see `createAdminClient`): under RLS an UPDATE that
- * matches no permitted rows succeeds with zero rows and no error.
+ * Concurrency-safe: the return page, the webhook and /pay/[token] can all
+ * verify the same payment at once. The UPDATE only applies while
+ * `paid_at IS NULL`, so exactly one caller performs the transition (keeping
+ * the original paid_at) and only that caller writes the `payments` row.
+ *
+ * Returns true when the row is confirmed as `status = 'paid'` with a
+ * `paid_at` timestamp, whether this call or a concurrent one recorded it.
+ * `supabase` must be a service-role client (see `createAdminClient`): under
+ * RLS an UPDATE that matches no permitted rows succeeds with zero rows.
  */
 export async function markPaymentLinkAsPaid(
   supabase: SupabaseClient,
   link: VerifiablePaymentLink,
   elavonData: Record<string, unknown>
 ): Promise<boolean> {
-  const timestamp = new Date().toISOString();
-  const patch = {
-    status: 'paid',
-    paid_at: timestamp,
-    payment_details: elavonData ?? {},
-  };
+  // 1. Transition payment_links to paid, only if nobody has recorded it yet.
+  const { data: updatedRows, error: updateError } = await supabase
+    .from('payment_links')
+    .update({
+      status: 'paid',
+      paid_at: new Date().toISOString(),
+      payment_details: elavonData ?? {},
+    })
+    .eq('id', link.id)
+    .is('paid_at', null)
+    .select('*');
 
-  // 1. Update the payment_links row. Match by primary key first, then fall back
-  //    to the public token and the Elavon session id.
-  const matchers: Array<[column: string, value: string | null | undefined]> = [
-    ['id', link.id],
-    ['link_token', link.link_token],
-    ['gateway_payment_id', link.gateway_payment_id],
-  ];
-
-  let persisted = false;
-
-  for (const [column, value] of matchers) {
-    if (!value) continue;
-
-    const { data: updatedRows, error: updateError } = await supabase
-      .from('payment_links')
-      .update(patch)
-      .eq(column, value)
-      .select('id, status, paid_at');
-
-    if (updateError) {
-      console.error(
-        `[verify] Failed to update payment_links (match ${column}=${value}):`,
-        updateError
-      );
-      continue;
-    }
-
-    if (!updatedRows || updatedRows.length === 0) {
-      console.error(
-        `[verify] UPDATE payment_links matched 0 rows (match ${column}=${value}). ` +
-          'Check that the client uses SUPABASE_SERVICE_ROLE_KEY and is not carrying a user session.'
-      );
-      continue;
-    }
-
-    persisted = updatedRows.some((row) => row.status === 'paid' && Boolean(row.paid_at));
-
-    if (persisted) {
-      break;
-    }
-
-    console.error(
-      `[verify] UPDATE payment_links returned rows but status/paid_at were not persisted (match ${column}=${value}):`,
-      updatedRows
-    );
+  if (updateError) {
+    console.error(`[verify] Failed to update payment_links for link ${link.id}:`, updateError);
+    return false;
   }
 
-  if (!persisted) {
+  const updatedRow = updatedRows?.[0] as (VerifiablePaymentLink & { paid_at?: string | null }) | undefined;
+
+  if (!updatedRow) {
+    // Zero rows: either a concurrent caller already recorded the payment, or
+    // the write was blocked. Re-read to tell the two apart.
+    const { data: currentRow, error: readError } = await supabase
+      .from('payment_links')
+      .select('id, status, paid_at')
+      .eq('id', link.id)
+      .maybeSingle();
+
+    if (readError) {
+      console.error(`[verify] Failed to re-read payment_links for link ${link.id}:`, readError);
+      return false;
+    }
+
+    if (currentRow?.status === 'paid' && currentRow.paid_at) {
+      console.log(`[verify] Link ${link.id} was already recorded as paid by a concurrent request.`);
+      return true;
+    }
+
     console.error(
-      `[verify] Payment for link ${link.id} (token ${link.link_token}) settled at the gateway ` +
-        'but could NOT be recorded in payment_links.'
+      `[verify] UPDATE payment_links matched 0 rows for link ${link.id} (current row: ` +
+        `${JSON.stringify(currentRow)}). Check that the client uses SUPABASE_SERVICE_ROLE_KEY ` +
+        'without a user session, and that paid_at is not set on an unpaid link.'
     );
     return false;
   }
 
-  // 2. Insert a payments row only if one does not already exist.
+  if (updatedRow.status !== 'paid' || !updatedRow.paid_at) {
+    console.error(`[verify] UPDATE payment_links did not persist status/paid_at for link ${link.id}:`, updatedRow);
+    return false;
+  }
+
+  // 2. Record the payment. Fields come from the freshly updated row, so callers
+  //    that pass a partial link (e.g. /pay/[token]) still write complete data.
   const { data: existingPayment, error: existingError } = await supabase
     .from('payments')
     .select('id')
     .eq('payment_link_id', link.id)
+    .limit(1)
     .maybeSingle();
 
   if (existingError) {
-    console.error('[verify] Error checking existing payments:', existingError);
+    console.error(`[verify] Error checking existing payments for link ${link.id}:`, existingError);
   }
 
   if (!existingPayment) {
     const transactionId =
       (typeof elavonData.transactionId === 'string' && elavonData.transactionId) ||
       (typeof elavonData.id === 'string' && elavonData.id) ||
-      link.gateway_payment_id ||
+      updatedRow.gateway_payment_id ||
       null;
 
     const { error: insertError } = await supabase.from('payments').insert({
-      business_id: link.business_id ?? null,
-      payment_link_id: link.id,
-      merchant_id: link.merchant_id ?? null,
-      amount: link.amount,
-      currency: (link.currency || 'USD').toUpperCase(),
+      business_id: updatedRow.business_id ?? null,
+      payment_link_id: updatedRow.id,
+      merchant_id: updatedRow.merchant_id ?? null,
+      amount: updatedRow.amount,
+      currency: (updatedRow.currency || 'USD').toUpperCase(),
       status: 'confirmed',
-      customer_name: link.customer_name ?? null,
-      customer_email: link.customer_email ?? null,
-      provider_reference: link.link_token,
+      customer_name: updatedRow.customer_name ?? null,
+      customer_email: updatedRow.customer_email ?? null,
+      provider_reference: updatedRow.link_token,
       provider_transaction_id: transactionId,
     });
 
-    if (insertError) {
-      console.error('[verify] Failed to insert into payments:', insertError);
+    if (insertError?.code === '23505') {
+      // Unique violation: a payments row for this link already exists.
+      console.warn(`[verify] payments row for link ${link.id} already exists; skipping insert.`);
+    } else if (insertError) {
       // The link is already marked paid, so treat this as a soft failure.
+      console.error(`[verify] Failed to insert into payments for link ${link.id}:`, insertError);
     }
   }
 

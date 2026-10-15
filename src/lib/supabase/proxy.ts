@@ -42,8 +42,22 @@ export async function updateSession(request: NextRequest) {
 
   const user = data?.claims;
 
-  // For now, only establish session refresh.
-  // We will add route authorization after the auth flow exists.
+  // Coarse route protection. Pages must still authorize next to their data;
+  // this only keeps signed-out visitors away from the dashboard.
+  if (!user && request.nextUrl.pathname.startsWith("/dashboard")) {
+    const loginUrl = request.nextUrl.clone();
+    loginUrl.pathname = "/auth/login";
+    loginUrl.search = "";
+
+    const redirectResponse = NextResponse.redirect(loginUrl);
+
+    // Carry over any auth cookies refreshed above so the session stays in sync.
+    supabaseResponse.cookies.getAll().forEach((cookie) => {
+      redirectResponse.cookies.set(cookie);
+    });
+
+    return redirectResponse;
+  }
 
   return supabaseResponse;
 }

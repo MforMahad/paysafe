@@ -1,11 +1,12 @@
-// Server Component: reads the database directly and bypasses RLS when using the
-// service-role key. force-dynamic + revalidate = 0 guarantee this page always
-// fetches fresh rows instead of the Next.js cache.
+// Server Component: reads as the signed-in user (RLS applies) and scopes rows
+// to the user's active business. force-dynamic + revalidate = 0 guarantee this
+// page always fetches fresh rows instead of the Next.js cache.
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 
 import React from "react";
-import { createClient } from "@supabase/supabase-js";
+import { redirect } from "next/navigation";
+import { createClient } from "@/lib/supabase/server";
 
 import { PaymentLinksTableClient, type PaymentLink } from "./PaymentLinksTableClient";
 
@@ -14,10 +15,40 @@ import { PaymentLinksTableClient, type PaymentLink } from "./PaymentLinksTableCl
 type RawPaymentLink = Omit<PaymentLink, "status"> & { status: string };
 
 export default async function PaymentLinksPage() {
-  const supabase = createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY!
-  );
+  const supabase = await createClient();
+
+  // Authorize here, next to the data: the dashboard layout's check does not
+  // re-run on client navigation and does not stop this page from rendering.
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) {
+    redirect("/auth/login");
+  }
+
+  // Same business resolution as the dashboard layout.
+  const { data: membership, error: membershipError } = await supabase
+    .from("memberships")
+    .select("business_id")
+    .eq("user_id", user.id)
+    .eq("status", "active")
+    .limit(1)
+    .maybeSingle();
+
+  if (membershipError) {
+    console.error("Failed to load business membership:", membershipError);
+    return (
+      <PaymentLinksTableClient
+        paymentLinks={[]}
+        errorMessage="We couldn't load your business account. Please refresh and try again."
+      />
+    );
+  }
+
+  if (!membership?.business_id) {
+    redirect("/onboarding/business");
+  }
 
   const { data, error } = await supabase
     .from("payment_links")
@@ -41,6 +72,7 @@ export default async function PaymentLinksPage() {
         customer_facing_name
       )
     `)
+    .eq("business_id", membership.business_id)
     .order("created_at", {
       ascending: false,
     });
@@ -81,7 +113,7 @@ export default async function PaymentLinksPage() {
   return (
     <PaymentLinksTableClient
       paymentLinks={paymentLinks}
-      errorMessage={error?.message || ""}
+      errorMessage={error ? "We couldn't load your payment links. Please refresh and try again." : ""}
     />
   );
 }

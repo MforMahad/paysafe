@@ -17,10 +17,13 @@ import {
  * credentials) whether that link's session has settled. A spoofed request can
  * therefore at most trigger a re-check; it can never mark a link as paid.
  *
- * Optional shared secret: when ELAVON_WEBHOOK_SECRET is set, requests must
- * also present it via `Authorization: Bearer <secret>`, an `x-webhook-secret`
- * header, or a `?secret=<secret>` query param on the notification URL
- * configured in Elavon.
+ * Shared secret: ELAVON_WEBHOOK_SECRET is required in production (optional in
+ * development). Requests must present it in a header, never the query string
+ * (query strings end up in access logs):
+ *   - `x-webhook-secret: <secret>`
+ *   - `Authorization: Bearer <secret>`
+ *   - `Authorization: Basic base64(<any user>:<secret>)`, which is what a
+ *     notification URL of the form https://user:<secret>@host/... sends.
  */
 
 type Payload = Record<string, unknown>;
@@ -29,13 +32,29 @@ function sha256(value: string): Buffer {
   return createHash('sha256').update(value).digest();
 }
 
+function secretFromAuthorization(authorization: string | null): string | null {
+  if (!authorization) return null;
+
+  const [scheme, value] = authorization.split(/\s+/, 2);
+  if (!value) return null;
+
+  if (scheme.toLowerCase() === 'bearer') {
+    return value;
+  }
+
+  if (scheme.toLowerCase() === 'basic') {
+    const decoded = Buffer.from(value, 'base64').toString('utf8');
+    const separator = decoded.indexOf(':');
+    return separator >= 0 ? decoded.slice(separator + 1) : null;
+  }
+
+  return null;
+}
+
 function hasValidSharedSecret(request: Request, secret: string): boolean {
-  const url = new URL(request.url);
-  const authorization = request.headers.get('authorization');
   const presented =
-    (authorization?.startsWith('Bearer ') ? authorization.slice(7) : null) ||
     request.headers.get('x-webhook-secret') ||
-    url.searchParams.get('secret');
+    secretFromAuthorization(request.headers.get('authorization'));
 
   if (!presented) return false;
 
@@ -114,9 +133,14 @@ export async function POST(request: Request) {
       console.warn('[webhooks/elavon] Rejected request with missing or invalid shared secret.');
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
+  } else if (process.env.NODE_ENV === 'production') {
+    // Fail closed: without a secret, anyone could make us call Elavon and
+    // write webhook_events rows. 500 so Elavon retries once it is configured.
+    console.error('[webhooks/elavon] ELAVON_WEBHOOK_SECRET is not set; rejecting webhook in production.');
+    return NextResponse.json({ error: 'Server misconfiguration' }, { status: 500 });
   } else {
     console.warn(
-      '[webhooks/elavon] ELAVON_WEBHOOK_SECRET is not set; relying on Elavon API verification only.'
+      '[webhooks/elavon] ELAVON_WEBHOOK_SECRET is not set; accepting unauthenticated webhook (development only).'
     );
   }
 
